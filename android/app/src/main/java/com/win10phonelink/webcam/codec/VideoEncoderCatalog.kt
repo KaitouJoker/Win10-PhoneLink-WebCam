@@ -55,6 +55,7 @@ object VideoEncoderCatalog {
                     it.isSizeSupported(1920, 1080) &&
                         (it.getSupportedFrameRatesFor(1920, 1080)?.upper ?: 0.0) >= 59.0
                 } ?: false
+                val maxBitrateBps = sanitizeMaxBitrateBps(videoCaps?.bitrateRange?.upper)
 
                 val option = EncoderOption(
                     codecName = info.name,
@@ -65,7 +66,8 @@ object VideoEncoderCatalog {
                     supportsCbr = supportsCbr,
                     supportsVbr = supportsVbr,
                     displayName = "",
-                    supports1080p60 = supports1080p60
+                    supports1080p60 = supports1080p60,
+                    maxBitrateBps = maxBitrateBps
                 )
                 discovered[key] = option.copy(
                     displayName = option.formatDisplayName(isKorean)
@@ -122,5 +124,14 @@ object VideoEncoderCatalog {
             lower.startsWith("omx.qcom.") || lower.startsWith("omx.exynos.") -> 3
             else -> 4
         }
+    }
+
+    internal const val MAX_DISPLAYABLE_BITRATE_BPS = 1_000_000_000
+
+    internal fun sanitizeMaxBitrateBps(rawUpperBps: Int?): Int {
+        if (rawUpperBps == null || rawUpperBps < 1_000_000 || rawUpperBps >= MAX_DISPLAYABLE_BITRATE_BPS) {
+            return 0
+        }
+        return rawUpperBps
     }
 }

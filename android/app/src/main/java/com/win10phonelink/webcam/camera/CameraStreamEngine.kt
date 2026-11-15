@@ -310,60 +310,84 @@ class CameraStreamEngine(private val context: Context) {
         val codec = MediaCodec.createByCodecName(encoder.codecName)
         mediaCodec = codec
 
-        val format = MediaFormat.createVideoFormat(encoder.mimeType, width, height).apply {
-            setInteger(
-                MediaFormat.KEY_COLOR_FORMAT,
-                MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
+        val exactFormat = buildEncoderFormat(
+            encoder = encoder,
+            width = width,
+            height = height,
+            fps = fps,
+            targetBitrateBps = bitrateBps,
+            tier = EncoderFormatTier.FULL
+        )
+        if (!tryConfigureEncoder(codec, exactFormat)) {
+            val clampedBitrateBps = clampBitrateForCodec(
+                codec = codec,
+                mimeType = encoder.mimeType,
+                requestedBps = bitrateBps,
+                fallbackMaxBps = encoder.maxBitrateBps
             )
-            setInteger(MediaFormat.KEY_BIT_RATE, bitrateBps)
-            setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
-            setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 1_000_000L / fps.coerceAtLeast(1))
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
-            }
-            if (fps >= 60 && encoder.supportsVbr) {
-                setInteger(
-                    MediaFormat.KEY_BITRATE_MODE,
-                    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
+            val fallbackWithFullFlags = clampedBitrateBps != bitrateBps &&
+                tryConfigureEncoder(
+                    codec,
+                    buildEncoderFormat(
+                        encoder = encoder,
+                        width = width,
+                        height = height,
+                        fps = fps,
+                        targetBitrateBps = clampedBitrateBps,
+                        tier = EncoderFormatTier.FULL
+                    )
                 )
-            } else if (encoder.supportsCbr) {
-                setInteger(
-                    MediaFormat.KEY_BITRATE_MODE,
-                    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
+            val fallbackCore60Fps = !fallbackWithFullFlags &&
+                tryConfigureEncoder(
+                    codec,
+                    buildEncoderFormat(
+                        encoder = encoder,
+                        width = width,
+                        height = height,
+                        fps = fps,
+                        targetBitrateBps = clampedBitrateBps,
+                        tier = EncoderFormatTier.CORE_60FPS
+                    )
                 )
-            } else if (encoder.supportsVbr) {
-                setInteger(
-                    MediaFormat.KEY_BITRATE_MODE,
-                    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
+            if (!fallbackWithFullFlags && !fallbackCore60Fps) {
+                val minimalFormat = buildEncoderFormat(
+                    encoder = encoder,
+                    width = width,
+                    height = height,
+                    fps = fps,
+                    targetBitrateBps = clampedBitrateBps,
+                    tier = EncoderFormatTier.MINIMAL
                 )
+                codec.configure(minimalFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
-            }
-            if (encoder.isHardware) {
-                setInteger(MediaFormat.KEY_PRIORITY, 0)
-                setInteger(MediaFormat.KEY_OPERATING_RATE, maxOf(fps, 60))
-            }
-        }
-
-        try {
-            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        } catch (_: Exception) {
-            val minimal = MediaFormat.createVideoFormat(encoder.mimeType, width, height).apply {
-                setInteger(
-                    MediaFormat.KEY_COLOR_FORMAT,
-                    MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
-                )
-                setInteger(MediaFormat.KEY_BIT_RATE, bitrateBps)
-                setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
-            }
-            codec.configure(minimal, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         }
 
         encoderSurface = codec.createInputSurface()
         codec.start()
+    }
+
+    private fun tryConfigureEncoder(codec: MediaCodec, format: MediaFormat): Boolean {
+        return try {
+            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            true
+        } catch (_: Exception) {
+            // Reset failed state before retrying with clamped bitrate or reduced optional flags.
+            runCatching { codec.reset() }
+            false
+        }
+    }
+
+    private fun clampBitrateForCodec(
+        codec: MediaCodec,
+        mimeType: String,
+        requestedBps: Int,
+        fallbackMaxBps: Int = 0
+    ): Int {
+        val range = runCatching {
+            codec.codecInfo.getCapabilitiesForType(mimeType)?.videoCapabilities?.bitrateRange
+        }.getOrNull()
+        val upper = range?.upper ?: fallbackMaxBps.takeIf { it > 0 }
+        return clampBitrateForRange(requestedBps, range?.lower, upper)
     }
 
     private fun startDrainLoop() {
@@ -764,5 +788,77 @@ class CameraStreamEngine(private val context: Context) {
             if (haystack[i] != prefix[i]) return false
         }
         return true
+    }
+
+    companion object {
+        internal enum class EncoderFormatTier {
+            FULL,
+            CORE_60FPS,
+            MINIMAL
+        }
+
+        internal fun buildEncoderFormat(
+            encoder: EncoderOption,
+            width: Int,
+            height: Int,
+            fps: Int,
+            targetBitrateBps: Int,
+            tier: EncoderFormatTier
+        ): MediaFormat = MediaFormat.createVideoFormat(encoder.mimeType, width, height).apply {
+            setInteger(
+                MediaFormat.KEY_COLOR_FORMAT,
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
+            )
+            setInteger(MediaFormat.KEY_BIT_RATE, targetBitrateBps)
+            setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
+            if (tier == EncoderFormatTier.MINIMAL) return@apply
+
+            if (fps >= 60 && encoder.supportsVbr) {
+                setInteger(
+                    MediaFormat.KEY_BITRATE_MODE,
+                    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
+                )
+            } else if (encoder.supportsCbr) {
+                setInteger(
+                    MediaFormat.KEY_BITRATE_MODE,
+                    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
+                )
+            } else if (encoder.supportsVbr) {
+                setInteger(
+                    MediaFormat.KEY_BITRATE_MODE,
+                    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
+                )
+            }
+            if (encoder.isHardware) {
+                setInteger(MediaFormat.KEY_PRIORITY, 0)
+                setInteger(MediaFormat.KEY_OPERATING_RATE, maxOf(fps, 60))
+            }
+            if (tier == EncoderFormatTier.CORE_60FPS) return@apply
+
+            // Keep repeat-frame interval above 1 frame period so normal 59.94/60fps jitter never emits duplicate frames.
+            val repeatUs = maxOf(33_333L, 2_000_000L / fps.coerceAtLeast(1))
+            setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, repeatUs)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+            }
+        }
+
+        internal fun clampBitrateForRange(
+            requestedBps: Int,
+            minBps: Int?,
+            maxBps: Int?
+        ): Int {
+            val safeRequested = requestedBps.coerceAtLeast(1)
+            if (minBps != null && maxBps != null && minBps > maxBps) {
+                return safeRequested
+            }
+            val lower = minBps?.takeIf { it > 0 } ?: 1
+            val upper = maxBps?.takeIf { it > 0 && it >= lower } ?: Int.MAX_VALUE
+            return safeRequested.coerceIn(lower, upper)
+        }
     }
 }

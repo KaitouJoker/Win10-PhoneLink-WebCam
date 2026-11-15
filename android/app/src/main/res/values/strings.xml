@@ -74,6 +74,7 @@
     <string name="encoder_detail_hw">HW Accel (%1$s)</string>
     <string name="encoder_detail_sw">SW Fallback</string>
     <string name="encoder_detail_count">Detected HW: %1$d (Total %2$d)</string>
+    <string name="encoder_detail_max_bitrate">Max %1$d Mbps</string>
     <string name="paired_pc_format">Paired PC: %1$s (Token: %2$s…)</string>
     <string name="lang_korean">한국어 (Korean)</string>
     <string name="lang_english">English</string>

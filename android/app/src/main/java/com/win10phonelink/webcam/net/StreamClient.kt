@@ -57,6 +57,8 @@ class StreamClient(
     @Volatile
     private var lastWriteMs: Long = 0L
 
+    private var lastSyncRequestMs: Long = 0L
+
     fun start() {
         if (!running.compareAndSet(false, true)) return
 
@@ -100,38 +102,60 @@ class StreamClient(
     }
 
     private fun enqueuePacket(packet: QueuedPacket) {
-        var dropped = false
+        var triggerSync = false
         lock.withLock {
             if (!running.get()) return
             if (packet.type == PACKET_TYPE_VIDEO && queue.size >= MAX_QUEUE_SIZE) {
-                val isCritical = (packet.flags and (FLAG_KEYFRAME or FLAG_CODEC_CONFIG)) != 0
-                if (isCritical) {
-                    // Evict oldest non-critical video packet to make room for keyframe/config.
-                    val idx = queue.indexOfFirst {
+                val isKeyframe = (packet.flags and FLAG_KEYFRAME) != 0
+                val isConfig = (packet.flags and FLAG_CODEC_CONFIG) != 0
+                if (isKeyframe) {
+                    // Fresh IDR resets the GOP: drop stale queued video frames (preserving standalone
+                    // config and control packets) so corrupted P-frames are not sent and new frames queue cleanly.
+                    val iter = queue.iterator()
+                    while (iter.hasNext()) {
+                        val queued = iter.next()
+                        val isStandaloneConfig = queued.type == PACKET_TYPE_VIDEO &&
+                            (queued.flags and FLAG_CODEC_CONFIG) != 0 &&
+                            (queued.flags and FLAG_KEYFRAME) == 0
+                        if (queued.type == PACKET_TYPE_VIDEO && !isStandaloneConfig) {
+                            iter.remove()
+                            droppedTotal++
+                        }
+                    }
+                    if (queue.size >= MAX_QUEUE_SIZE + 4) {
+                        queue.removeFirst()
+                        droppedTotal++
+                    }
+                    queue.addLast(packet)
+                } else if (isConfig) {
+                    // Evict newest non-critical video frame first so earlier P-frames stay decodable.
+                    val idx = queue.indexOfLast {
                         it.type == PACKET_TYPE_VIDEO &&
                             (it.flags and (FLAG_KEYFRAME or FLAG_CODEC_CONFIG)) == 0
                     }
                     if (idx >= 0) {
                         queue.removeAt(idx)
                         droppedTotal++
-                        dropped = true
                     } else if (queue.size >= MAX_QUEUE_SIZE + 4) {
                         queue.removeFirst()
                         droppedTotal++
-                        dropped = true
                     }
                     queue.addLast(packet)
                 } else {
-                    // Drop current P-frame when congested and request an IDR refresh.
+                    // Drop current P-frame when congested and rate-limit IDR refresh requests.
                     droppedTotal++
-                    dropped = true
+                    val nowMs = System.currentTimeMillis()
+                    if (nowMs - lastSyncRequestMs >= SYNC_REQUEST_COOLDOWN_MS) {
+                        lastSyncRequestMs = nowMs
+                        triggerSync = true
+                    }
                 }
             } else {
                 queue.addLast(packet)
             }
             notEmpty.signal()
         }
-        if (dropped) {
+        if (triggerSync) {
             onNeedSyncFrame()
         }
     }
@@ -143,13 +167,13 @@ class StreamClient(
                 tcpNoDelay = true
                 keepAlive = true
                 trafficClass = 0x10
-                sendBufferSize = 524_288
+                sendBufferSize = 2_097_152
                 soTimeout = HANDSHAKE_TIMEOUT_MS
                 connect(InetSocketAddress(pairing.ip, pairing.port), CONNECT_TIMEOUT_MS)
             }
             socket = sock
 
-            val rawOut = BufferedOutputStream(sock.getOutputStream(), 65_536)
+            val rawOut = BufferedOutputStream(sock.getOutputStream(), STREAM_BUFFER_BYTES)
             val input = DataInputStream(sock.getInputStream())
 
             val handshakeJson = JSONObject().apply {
@@ -213,13 +237,13 @@ class StreamClient(
                         sentTotal++
                         windowBytes += 16L + pkt.payload.size
                         if (pkt.type == PACKET_TYPE_VIDEO &&
-                            (pkt.flags and FLAG_CODEC_CONFIG) == 0
+                            ((pkt.flags and FLAG_KEYFRAME) != 0 || (pkt.flags and FLAG_CODEC_CONFIG) == 0)
                         ) {
                             windowFrames++
                         }
                     }
                     rawOut.flush()
-                    lastWriteMs = nowMs
+                    lastWriteMs = System.currentTimeMillis()
                 } else if (nowMs - lastWriteMs >= HEARTBEAT_INTERVAL_MS) {
                     val hb = QueuedPacket(
                         type = PACKET_TYPE_HEARTBEAT,
@@ -229,16 +253,17 @@ class StreamClient(
                     )
                     writeFramedPacket(rawOut, headerBuf, hb)
                     rawOut.flush()
-                    lastWriteMs = nowMs
+                    lastWriteMs = System.currentTimeMillis()
                     windowBytes += 16L
                 }
 
-                val elapsedMs = nowMs - statsWindowStart
+                val sampleNowMs = System.currentTimeMillis()
+                val elapsedMs = sampleNowMs - statsWindowStart
                 if (elapsedMs >= 1000L) {
                     val measuredFps = windowFrames * 1000.0 / elapsedMs
                     val measuredKbps = (windowBytes * 8.0) / elapsedMs
                     onStatsSample(measuredFps, measuredKbps, sentTotal, droppedTotal)
-                    statsWindowStart = nowMs
+                    statsWindowStart = sampleNowMs
                     windowFrames = 0
                     windowBytes = 0L
                 }
@@ -332,7 +357,9 @@ class StreamClient(
         private const val CONNECT_TIMEOUT_MS = 5_000
         private const val HANDSHAKE_TIMEOUT_MS = 8_000
         private const val HEARTBEAT_INTERVAL_MS = 2_000L
+        private const val SYNC_REQUEST_COOLDOWN_MS = 500L
         private const val MAX_QUEUE_SIZE = 60
+        private const val STREAM_BUFFER_BYTES = 1_048_576
 
         private val MAGIC_PLWC = byteArrayOf(0x50, 0x4C, 0x57, 0x43) // "PLWC"
         private val HANDSHAKE_OK = byteArrayOf(0x4F, 0x4B, 0x0D, 0x0A) // "OK\r\n"

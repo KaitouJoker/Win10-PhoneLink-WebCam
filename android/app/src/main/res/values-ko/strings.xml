@@ -74,6 +74,7 @@
     <string name="encoder_detail_hw">HW 가속 (%1$s)</string>
     <string name="encoder_detail_sw">SW 폴백</string>
     <string name="encoder_detail_count">감지된 기기 HW: %1$d개 (전체 %2$d개)</string>
+    <string name="encoder_detail_max_bitrate">최대 %1$d Mbps</string>
     <string name="paired_pc_format">연결된 PC: %1$s (토큰: %2$s…)</string>
     <string name="lang_korean">한국어 (Korean)</string>
     <string name="lang_english">English</string>

@@ -769,6 +769,103 @@ def verify_60fps_1080p_rotated(codec: str, port: int, token: str) -> None:
                 receiver_proc.kill()
 
 
+def verify_high_bitrate_1080p60(port: int, token: str) -> None:
+    """Stream >100 Mbps 1080p60 H.264 video to PhoneCamReceiver and verify NVDEC sustains >=55 fps with 0 FFmpeg drops."""
+    pre_cmd = [
+        str(SYSTEM_FFMPEG), "-hide_banner", "-loglevel", "error",
+        "-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=60:d=0.5,noise=alls=40:allf=t",
+        "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+        "-b:v", "140M", "-maxrate", "180M", "-bufsize", "60M",
+        "-threads", "1", "-g", "30", "-bf", "0", "-pix_fmt", "yuv420p", "-f", "h264", "pipe:1",
+    ]
+    pre_res = subprocess.run(pre_cmd, capture_output=True, timeout=45, check=False)
+    assert pre_res.returncode == 0 and len(pre_res.stdout) > 100_000, (
+        f"[h264-140M] Pre-encode failed ({pre_res.returncode}): {pre_res.stderr.decode('utf-8', 'replace')}"
+    )
+    initial_config, units = _split_annexb_access_units("h264", pre_res.stdout)
+    assert len(units) >= 28, f"[h264-140M] Expected >=28 pre-encoded frames, got {len(units)}"
+    clip_mbps = sum(len(u[1]) for u in units) * 8.0 / (len(units) / 60.0) / 1e6
+    assert clip_mbps >= 100.0, f"[h264-140M] Expected >=100 Mbps bitstream, got {clip_mbps:.1f} Mbps"
+
+    receiver_cmd = [
+        str(RECEIVER_EXE),
+        "--headless-test",
+        "--port", str(port),
+        "--token", token,
+        "--decoder", "nvdec",
+        "--width", "1920",
+        "--height", "1080",
+        "--duration", "5",
+    ]
+    receiver_proc = subprocess.Popen(
+        receiver_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    winmm = ctypes.WinDLL("winmm")
+    timer_started = False
+    sock: socket.socket | None = None
+    try:
+        wait_for_tcp_port("127.0.0.1", port, timeout_s=8.0)
+        sock = connect_plwc("127.0.0.1", port, token, "h264", "e2e-140M-h264", 1920, 1080, 60)
+        send_plwc_packet(sock, 2, 0, 0, json.dumps({"rotation": 0, "camera": "back"}).encode("utf-8"))
+        if initial_config:
+            send_plwc_packet(sock, 1, 0x02, 0, initial_config)
+
+        winmm.timeBeginPeriod(1)
+        timer_started = True
+        start_t = time.perf_counter()
+        total_send = 240  # ~4.0s at 60 fps
+        for frame_idx in range(total_send):
+            flags, payload = units[frame_idx % len(units)]
+            send_plwc_packet(sock, 1, flags, frame_idx * 16666, payload)
+            target = start_t + (frame_idx + 1) / 60.0
+            rem = target - time.perf_counter()
+            if rem > 0.002:
+                time.sleep(rem - 0.002)
+            while time.perf_counter() < target:
+                pass
+
+        shm = read_shm_header()
+        assert shm.frame_state == 1 and shm.width == 1920 and shm.height == 1080, (
+            f"[h264-140M] Unexpected SHM state: {shm}"
+        )
+
+        stdout_text, stderr_text = receiver_proc.communicate(timeout=15)
+        assert receiver_proc.returncode == 0, (
+            f"[h264-140M] PhoneCamReceiver exited {receiver_proc.returncode}\nSTDOUT:\n{stdout_text}\nSTDERR:\n{stderr_text}"
+        )
+        drops = [int(m) for m in re.findall(r"\[FFmpeg\][^\r\n]*\bdrop=(\d+)", stdout_text)]
+        assert all(d == 0 for d in drops), f"[h264-140M] FFmpeg dropped frames (drops={drops}):\n{stdout_text}"
+        fps_samples = [float(m) for m in re.findall(r"\[Headless\][^\r\n]*\bfps=([0-9.]+)", stdout_text)]
+        peak_fps = max(fps_samples) if fps_samples else 0.0
+        assert peak_fps >= 55.0, f"[h264-140M] Peak FPS {peak_fps:.1f} < 55.0:\n{stdout_text}"
+        m_frames = re.search(r"TotalFrames=(\d+)", stdout_text)
+        total_frames = int(m_frames.group(1)) if m_frames else 0
+        assert total_frames >= 180, f"[h264-140M] TotalFrames={total_frames} < 180:\n{stdout_text}"
+        print(
+            f"  OK: [h264-140M] {clip_mbps:.1f} Mbps 1080p60 peak_fps={peak_fps:.1f}, "
+            f"TotalFrames={total_frames}, FFmpeg drops={drops or [0]}"
+        )
+    finally:
+        if timer_started:
+            winmm.timeEndPeriod(1)
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+        if receiver_proc.poll() is None:
+            receiver_proc.terminate()
+            try:
+                receiver_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                receiver_proc.kill()
+
+
 def check_android_completeness() -> None:
     print("[8/8] Auditing Android companion project & wire compatibility...")
     required_files = [
@@ -908,6 +1005,9 @@ def main() -> int:
     print("[7/9] Running 60fps 1080p rotated (270deg) stream verification (h264 & hevc NVDEC)...")
     verify_60fps_1080p_rotated("h264", TEST_PORT, TEST_TOKEN)
     verify_60fps_1080p_rotated("hevc", TEST_PORT, TEST_TOKEN)
+
+    print("[8/10] Running >100 Mbps 1080p60 high-bitrate verification (h264 NVDEC)...")
+    verify_high_bitrate_1080p60(TEST_PORT, TEST_TOKEN)
 
     print("[8/9] Running E2E horizontal + vertical flip verification (--flip-h --flip-v)...")
     stream_live_ffmpeg_to_plwc(

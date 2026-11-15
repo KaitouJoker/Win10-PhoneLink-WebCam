@@ -11,7 +11,7 @@ Windows 휴대폰과 연결(Phone Link) 앱 없이 동작하는 **Android ↔ Wi
 
 - **QR 코드 원클릭 연결**: IP, TCP 포트(`9876`), 보안 토큰, 코덱, 목표 해상도를 QR에 담아 자동 동기화하며, 수동 IP 입력 및 USB ADB(`127.0.0.1`) 연결도 지원합니다.
 - **종단간 하드웨어 가속 파이프라인**:
-  - **Android**: 기기에서 지원하는 `MediaCodec` 하드웨어 인코더 목록을 자동 스캔/표시하며 `H.264 / AVC`, `HEVC / H.265`, 카메라 렌즈, FPS(`30` / `60 fps`), 해상도(`1080p` / `720p` / `540p` / `360p`), 비트레이트(`4`~`50 Mbps`), 회전 모드를 선택할 수 있습니다.
+  - **Android**: 기기에서 지원하는 `MediaCodec` 하드웨어 인코더 목록을 자동 스캔/표시하며 `H.264 / AVC`, `HEVC / H.265`, 카메라 렌즈, FPS(`30` / `60 fps`), 해상도(`1080p` / `720p` / `540p` / `360p`), 비트레이트(`4`~`200 Mbps`), 회전 모드를 선택할 수 있습니다.
   - **Windows PC**: **NVIDIA NVDEC**(`h264_cuvid` / `hevc_cuvid`), **Direct3D 11 (`d3d11va`)**, **CPU 소프트웨어 디코딩** 선택 및 다중 GPU 장치 지정을 지원합니다.
 - **DirectShow 가상 카메라 (`64-bit` & `32-bit`)**:
   - `vcam-dshow.dll`(x64) 및 `vcam-dshow32.dll`(x86) 필터를 `HKLM`에 등록하여 **Discord**를 포함한 32/64비트 데스크톱 앱에서 `Win10 PhoneLink Virtual Camera`가 인식됩니다.

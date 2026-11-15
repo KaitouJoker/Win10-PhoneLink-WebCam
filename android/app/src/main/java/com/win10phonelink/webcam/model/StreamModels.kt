@@ -58,7 +58,13 @@ enum class BitratePreset(val bps: Int, val label: String) {
     MBPS_20(20_000_000, "20 Mbps"),
     MBPS_25(25_000_000, "25 Mbps"),
     MBPS_35(35_000_000, "35 Mbps"),
-    MBPS_50(50_000_000, "50 Mbps");
+    MBPS_50(50_000_000, "50 Mbps"),
+    MBPS_60(60_000_000, "60 Mbps"),
+    MBPS_80(80_000_000, "80 Mbps"),
+    MBPS_100(100_000_000, "100 Mbps"),
+    MBPS_120(120_000_000, "120 Mbps"),
+    MBPS_150(150_000_000, "150 Mbps"),
+    MBPS_200(200_000_000, "200 Mbps");
 
     override fun toString(): String = label
 }
@@ -82,7 +88,8 @@ data class EncoderOption(
     val supportsCbr: Boolean,
     val supportsVbr: Boolean,
     val displayName: String,
-    val supports1080p60: Boolean = false
+    val supports1080p60: Boolean = false,
+    val maxBitrateBps: Int = 0
 ) {
     fun formatDisplayName(isKorean: Boolean): String {
         val badge = if (isHardware) {

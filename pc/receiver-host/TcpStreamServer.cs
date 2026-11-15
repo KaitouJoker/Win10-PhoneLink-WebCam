@@ -119,6 +119,7 @@ public sealed class TcpStreamServer : IDisposable
         Stop();
         _serverCts = new CancellationTokenSource();
         _listener = new TcpListener(IPAddress.Any, _port);
+        _listener.Server.ReceiveBufferSize = 4 * 1024 * 1024;
         _listener.Start();
         _log($"[Server] Listening on 0.0.0.0:{_port} (Decoder={_decoderMode})");
         _acceptTask = Task.Run(() => AcceptLoopAsync(_listener, _serverCts.Token));
@@ -298,7 +299,7 @@ public sealed class TcpStreamServer : IDisposable
             using (client)
             {
                 client.NoDelay = true;
-                client.ReceiveBufferSize = 1024 * 1024;
+                client.ReceiveBufferSize = 4 * 1024 * 1024;
                 NetworkStream stream = client.GetStream();
 
                 byte[] magicBuf = new byte[4];
@@ -387,7 +388,7 @@ public sealed class TcpStreamServer : IDisposable
                 }
 
                 byte[] headerBuf = new byte[Protocol.PacketHeaderSize];
-                byte[] payloadBuf = new byte[64 * 1024];
+                byte[] payloadBuf = new byte[512 * 1024];
 
                 while (!ct.IsCancellationRequested)
                 {

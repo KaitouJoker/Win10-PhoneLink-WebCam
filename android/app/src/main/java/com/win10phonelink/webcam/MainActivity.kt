@@ -775,6 +775,17 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
                 }
             )
             if (enc.supports1080p60) append(" • 1080p60")
+            if (enc.maxBitrateBps in 1_000_000 until VideoEncoderCatalog.MAX_DISPLAYABLE_BITRATE_BPS) {
+                append(
+                    " • ${
+                        lStrFor(
+                            langCode,
+                            R.string.encoder_detail_max_bitrate,
+                            enc.maxBitrateBps / 1_000_000
+                        )
+                    }"
+                )
+            }
             append(" • ${lStrFor(langCode, R.string.encoder_detail_count, hwCount, allEncoders.size)}")
         }
         binding.textEncoderDetail.text = modeDesc
@@ -804,7 +815,12 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
             } else {
                 if (isKorean) "기본 해상도" else "Standard Resolution"
             }
-            "[${opt.wireCodec.uppercase()}] ${opt.codecName}\n$hwTag • $rc • $fpsTag"
+            val maxTag = if (opt.maxBitrateBps in 1_000_000 until VideoEncoderCatalog.MAX_DISPLAYABLE_BITRATE_BPS) {
+                " • ${lStr(R.string.encoder_detail_max_bitrate, opt.maxBitrateBps / 1_000_000)}"
+            } else {
+                ""
+            }
+            "[${opt.wireCodec.uppercase()}] ${opt.codecName}\n$hwTag • $rc • $fpsTag$maxTag"
         }.toTypedArray()
 
         var chosenIdx = candidates.indexOfFirst {

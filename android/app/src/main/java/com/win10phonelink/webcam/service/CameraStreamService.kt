@@ -38,6 +38,7 @@ import com.win10phonelink.webcam.net.StreamClient
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import java.util.concurrent.atomic.AtomicBoolean
 
 class CameraStreamService : Service() {
@@ -164,10 +165,12 @@ class CameraStreamService : Service() {
             engine.switchLens(newLens)
             val rot = engine.getCurrentRotationDegrees()
             streamClient?.sendControl(rot, newLens.wireName)
-            _telemetry.value = _telemetry.value.copy(
-                activeLensLabel = newLens.formatLabel(LocaleHelper.isKorean(this)),
-                rotationDegrees = rot
-            )
+            _telemetry.update {
+                it.copy(
+                    activeLensLabel = newLens.formatLabel(LocaleHelper.isKorean(this)),
+                    rotationDegrees = rot
+                )
+            }
         }
     }
 
@@ -297,12 +300,14 @@ class CameraStreamService : Service() {
                 if (engineStarted) engine.requestSyncFrame()
             },
             onStatsSample = { measuredFps, kbps, sentTotal, droppedTotal ->
-                _telemetry.value = _telemetry.value.copy(
-                    actualFps = measuredFps,
-                    bitrateKbps = kbps,
-                    packetsSent = sentTotal,
-                    droppedPackets = droppedTotal
-                )
+                _telemetry.update {
+                    it.copy(
+                        actualFps = measuredFps,
+                        bitrateKbps = kbps,
+                        packetsSent = sentTotal,
+                        droppedPackets = droppedTotal
+                    )
+                }
             }
         )
         streamClient = client
@@ -344,7 +349,7 @@ class CameraStreamService : Service() {
 
                     override fun onRotationChanged(rotationDegrees: Int, cameraWireName: String) {
                         streamClient?.sendControl(rotationDegrees, cameraWireName)
-                        _telemetry.value = _telemetry.value.copy(rotationDegrees = rotationDegrees)
+                        _telemetry.update { it.copy(rotationDegrees = rotationDegrees) }
                     }
 
                     override fun onError(message: String) {

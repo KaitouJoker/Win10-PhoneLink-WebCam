@@ -11,7 +11,7 @@ Scan a QR code from the portable Windows receiver with your Android phone to str
 
 - **QR Code Instant Pairing**: Auto-syncs IP, TCP port (`9876`), pairing token, target codec, and resolution between PC and phone (also supports manual IP & ADB `127.0.0.1` tunneling).
 - **Hardware-Accelerated Encode & Decode Pipeline**:
-  - **Android**: Inspects on-device `MediaCodec` encoders and lets you choose supported hardware accelerators (`H.264 / AVC` or `HEVC / H.265`), lens (`Wide`, `Ultra-Wide`, `Tele`, `Front`), FPS (`30` / `60 fps`), resolution (`1080p` / `720p` / `540p` / `360p`), bitrate (`4`–`50 Mbps`), and rotation lock.
+  - **Android**: Inspects on-device `MediaCodec` encoders and lets you choose supported hardware accelerators (`H.264 / AVC` or `HEVC / H.265`), lens (`Wide`, `Ultra-Wide`, `Tele`, `Front`), FPS (`30` / `60 fps`), resolution (`1080p` / `720p` / `540p` / `360p`), bitrate (`4`–`200 Mbps`), and rotation lock.
   - **Windows PC**: Hardware decoding via **NVIDIA NVDEC** (`h264_cuvid` / `hevc_cuvid`), **Direct3D 11 (`d3d11va`)**, or **CPU** fallback, with selectable GPU index.
 - **Native DirectShow Virtual Camera (`x64` & `x86`)**:
   - Registers both 64-bit (`vcam-dshow.dll`) and 32-bit (`vcam-dshow32.dll`) filters into `HKLM` so desktop apps including **Discord** recognize `Win10 PhoneLink Virtual Camera`.
