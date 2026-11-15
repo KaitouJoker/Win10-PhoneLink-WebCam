@@ -46,26 +46,34 @@ object CameraLensCatalog {
                         primaryBackId = id
                         primaryBackFocal = focal
                         primaryBackSensorOrientation = sensorOrientation
+                        val focalStr = formatFocal(focal)
                         options.add(
                             CameraLensOption(
                                 id = "logical:$id",
                                 logicalCameraId = id,
                                 physicalCameraId = null,
-                                label = "Back Wide (ID $id, ${formatFocal(focal)})",
+                                label = "Back Wide (ID $id, $focalStr)",
                                 wireName = "back",
                                 isFrontFacing = false,
                                 sensorOrientation = sensorOrientation,
-                                focalLengthMm = focal
+                                focalLengthMm = focal,
+                                koLabel = "후면 광각 (ID $id, $focalStr)"
                             )
                         )
                     } else {
                         val isUltraWide = focal < primaryBackFocal * 0.72f
                         val isTele = focal > primaryBackFocal * 1.5f
                         if (isUltraWide) hasUltraWide = true
+                        val focalStr = formatFocal(focal)
                         val label = when {
-                            isUltraWide -> "Ultra-Wide (ID $id, ${formatFocal(focal)})"
-                            isTele -> "Back Telephoto (ID $id, ${formatFocal(focal)})"
-                            else -> "Back Aux (ID $id, ${formatFocal(focal)})"
+                            isUltraWide -> "Ultra-Wide (ID $id, $focalStr)"
+                            isTele -> "Back Telephoto (ID $id, $focalStr)"
+                            else -> "Back Aux (ID $id, $focalStr)"
+                        }
+                        val koLabel = when {
+                            isUltraWide -> "초광각 (ID $id, $focalStr)"
+                            isTele -> "후면 망원 (ID $id, $focalStr)"
+                            else -> "후면 보조 (ID $id, $focalStr)"
                         }
                         val wireName = if (isUltraWide) "ultrawide" else "back"
                         options.add(
@@ -77,7 +85,8 @@ object CameraLensCatalog {
                                 wireName = wireName,
                                 isFrontFacing = false,
                                 sensorOrientation = sensorOrientation,
-                                focalLengthMm = focal
+                                focalLengthMm = focal,
+                                koLabel = koLabel
                             )
                         )
                     }
@@ -90,6 +99,11 @@ object CameraLensCatalog {
                     } else {
                         "Front Aux (ID $id)"
                     }
+                    val koLabel = if (isFirstFront) {
+                        "전면 (ID $id)"
+                    } else {
+                        "전면 보조 (ID $id)"
+                    }
                     options.add(
                         CameraLensOption(
                             id = "logical:$id",
@@ -99,7 +113,8 @@ object CameraLensCatalog {
                             wireName = "front",
                             isFrontFacing = true,
                             sensorOrientation = sensorOrientation,
-                            focalLengthMm = focal
+                            focalLengthMm = focal,
+                            koLabel = koLabel
                         )
                     )
                 }
@@ -138,9 +153,14 @@ object CameraLensCatalog {
                 if (!seenPhysicalFocal.add(dedupKey)) continue
 
                 if (isUltraWide) hasUltraWide = true
+                val physFocalStr = formatFocal(physFocal)
                 val label = when {
-                    isUltraWide -> "Ultra-Wide (Phys $physicalId, ${formatFocal(physFocal)})"
-                    else -> "Back Telephoto (Phys $physicalId, ${formatFocal(physFocal)})"
+                    isUltraWide -> "Ultra-Wide (Phys $physicalId, $physFocalStr)"
+                    else -> "Back Telephoto (Phys $physicalId, $physFocalStr)"
+                }
+                val koLabel = when {
+                    isUltraWide -> "초광각 (물리 $physicalId, $physFocalStr)"
+                    else -> "후면 망원 (물리 $physicalId, $physFocalStr)"
                 }
                 val wireName = if (isUltraWide) "ultrawide" else "back"
                 options.add(
@@ -152,7 +172,8 @@ object CameraLensCatalog {
                         wireName = wireName,
                         isFrontFacing = false,
                         sensorOrientation = physOrientation,
-                        focalLengthMm = physFocal
+                        focalLengthMm = physFocal,
+                        koLabel = koLabel
                     )
                 )
             }
@@ -164,17 +185,19 @@ object CameraLensCatalog {
             val zoomRange = chars?.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
             if (zoomRange != null && zoomRange.lower <= 0.65f) {
                 val targetZoom = max(zoomRange.lower, 0.6f)
+                val zoomLabel = String.format(Locale.US, "%.1fx", targetZoom)
                 options.add(
                     CameraLensOption(
                         id = "zoom:$primaryBackId:$targetZoom",
                         logicalCameraId = primaryBackId,
                         physicalCameraId = null,
-                        label = "Ultra-Wide (${String.format(Locale.US, "%.1fx", targetZoom)} Zoom)",
+                        label = "Ultra-Wide ($zoomLabel Zoom)",
                         wireName = "ultrawide",
                         isFrontFacing = false,
                         sensorOrientation = primaryBackSensorOrientation,
                         focalLengthMm = primaryBackFocal * targetZoom,
-                        zoomRatio = targetZoom
+                        zoomRatio = targetZoom,
+                        koLabel = "초광각 ($zoomLabel 줌)"
                     )
                 )
             }

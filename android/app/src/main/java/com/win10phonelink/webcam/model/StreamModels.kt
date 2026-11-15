@@ -9,8 +9,8 @@ enum class StreamConnectionState {
 }
 
 enum class CodecFamily(val wireCodec: String, val label: String) {
-    H264("h264", "H.264 / AVC (저지연 권장)"),
-    HEVC("hevc", "HEVC / H.265 (고효율 압축)");
+    H264("h264", "H.264 / AVC (Low Latency)"),
+    HEVC("hevc", "HEVC / H.265 (High Efficiency)");
 
     override fun toString(): String = label
 
@@ -84,6 +84,21 @@ data class EncoderOption(
     val displayName: String,
     val supports1080p60: Boolean = false
 ) {
+    fun formatDisplayName(isKorean: Boolean): String {
+        val badge = if (isHardware) {
+            if (isKorean) "[HW 가속]" else "[HW Accel]"
+        } else {
+            if (isKorean) "[SW 폴백]" else "[SW Fallback]"
+        }
+        val codecTag = wireCodec.uppercase()
+        val hwNote = if (supports1080p60) "$vendorLabel, 1080p60" else vendorLabel
+        return if (isHardware) {
+            "$badge $codecTag • $codecName ($hwNote)"
+        } else {
+            "$badge $codecTag • $codecName"
+        }
+    }
+
     override fun toString(): String = displayName
 }
 
@@ -96,8 +111,11 @@ data class CameraLensOption(
     val isFrontFacing: Boolean,
     val sensorOrientation: Int,
     val focalLengthMm: Float,
-    val zoomRatio: Float? = null
+    val zoomRatio: Float? = null,
+    val koLabel: String = label
 ) {
+    fun formatLabel(isKorean: Boolean): String = if (isKorean) koLabel else label
+
     override fun toString(): String = label
 }
 

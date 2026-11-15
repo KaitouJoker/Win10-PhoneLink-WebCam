@@ -17,6 +17,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import android.view.Surface
+import androidx.annotation.StringRes
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -49,6 +50,11 @@ class CameraStreamService : Service() {
         super.attachBaseContext(LocaleHelper.wrapContext(newBase))
     }
 
+    private fun lStr(@StringRes resId: Int, vararg formatArgs: Any): String {
+        val res = LocaleHelper.getLocalizedResources(this)
+        return if (formatArgs.isEmpty()) res.getString(resId) else res.getString(resId, *formatArgs)
+    }
+
     private data class ActiveConfig(
         val pairing: PairingPayload,
         val lens: CameraLensOption,
@@ -78,6 +84,9 @@ class CameraStreamService : Service() {
     @Volatile
     private var engineStarted: Boolean = false
     private var reconnectAttempt: Int = 0
+    private var lastDisconnectReason: String? = null
+    @StringRes
+    private var lastStatusErrorResId: Int? = null
 
     private val periodicSyncRunnable = object : Runnable {
         override fun run() {
@@ -113,10 +122,11 @@ class CameraStreamService : Service() {
                 if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
                     != PackageManager.PERMISSION_GRANTED
                 ) {
+                    lastStatusErrorResId = R.string.permission_camera_required
                     updateTelemetry(
                         StreamTelemetry(
                             state = StreamConnectionState.ERROR,
-                            statusDetail = getString(R.string.permission_camera_required)
+                            statusDetail = lStr(R.string.permission_camera_required)
                         )
                     )
                     stopSelf()
@@ -155,7 +165,7 @@ class CameraStreamService : Service() {
             val rot = engine.getCurrentRotationDegrees()
             streamClient?.sendControl(rot, newLens.wireName)
             _telemetry.value = _telemetry.value.copy(
-                activeLensLabel = newLens.label,
+                activeLensLabel = newLens.formatLabel(LocaleHelper.isKorean(this)),
                 rotationDegrees = rot
             )
         }
@@ -179,18 +189,83 @@ class CameraStreamService : Service() {
         stopStreamingInternal(stopService = true)
     }
 
+    fun refreshLocalization() {
+        ensureNotificationChannel()
+        val cfg = activeConfig
+        val isKorean = LocaleHelper.isKorean(this)
+        val cur = _telemetry.value
+
+        val updatedTelemetry = when (cur.state) {
+            StreamConnectionState.IDLE -> cur.copy(
+                statusDetail = lStr(R.string.status_idle)
+            )
+            StreamConnectionState.CONNECTING -> cur.copy(
+                statusDetail = if (cfg != null) {
+                    lStr(R.string.status_connecting_target, cfg.pairing.ip, cfg.pairing.port)
+                } else {
+                    cur.statusDetail
+                },
+                activeLensLabel = cfg?.lens?.formatLabel(isKorean) ?: cur.activeLensLabel
+            )
+            StreamConnectionState.STREAMING -> cur.copy(
+                statusDetail = if (cfg != null) {
+                    lStr(R.string.status_streaming_target, cfg.pairing.toDisplaySummary())
+                } else {
+                    cur.statusDetail
+                },
+                activeLensLabel = cfg?.lens?.formatLabel(isKorean) ?: cur.activeLensLabel
+            )
+            StreamConnectionState.RECONNECTING -> cur.copy(
+                statusDetail = lStr(
+                    R.string.status_reconnecting_attempt,
+                    reconnectAttempt,
+                    lastDisconnectReason ?: lStr(R.string.err_disconnected)
+                ),
+                activeLensLabel = cfg?.lens?.formatLabel(isKorean) ?: cur.activeLensLabel
+            )
+            StreamConnectionState.ERROR -> lastStatusErrorResId?.let { resId ->
+                cur.copy(statusDetail = lStr(resId))
+            } ?: cur
+        }
+        updateTelemetry(updatedTelemetry)
+
+        if (isStreamingIntent.get()) {
+            val notifText = when (cur.state) {
+                StreamConnectionState.STREAMING -> if (cfg != null) {
+                    lStr(
+                        R.string.notif_streaming_format,
+                        cfg.width,
+                        cfg.height,
+                        cfg.encoder.wireCodec.uppercase(),
+                        cfg.pairing.ip
+                    )
+                } else {
+                    lStr(R.string.notif_initializing)
+                }
+                StreamConnectionState.RECONNECTING -> lStr(
+                    R.string.notif_reconnecting_target,
+                    cfg?.pairing?.ip.orEmpty()
+                )
+                else -> lStr(R.string.notif_initializing)
+            }
+            updateNotificationText(notifText)
+        }
+    }
+
     private fun beginSession(cfg: ActiveConfig) {
         stopStreamingInternal(stopService = false)
         activeConfig = cfg
         isStreamingIntent.set(true)
         reconnectAttempt = 0
+        lastDisconnectReason = null
+        lastStatusErrorResId = null
         acquireWakeLock()
 
         updateTelemetry(
             StreamTelemetry(
                 state = StreamConnectionState.CONNECTING,
-                statusDetail = "Connecting to ${cfg.pairing.ip}:${cfg.pairing.port}…",
-                activeLensLabel = cfg.lens.label,
+                statusDetail = lStr(R.string.status_connecting_target, cfg.pairing.ip, cfg.pairing.port),
+                activeLensLabel = cfg.lens.formatLabel(LocaleHelper.isKorean(this)),
                 activeEncoderName = cfg.encoder.codecName,
                 activeCodec = cfg.encoder.wireCodec.uppercase(),
                 width = cfg.width,
@@ -274,6 +349,8 @@ class CameraStreamService : Service() {
 
                     override fun onError(message: String) {
                         mainHandler.post {
+                            lastStatusErrorResId = null
+                            lastDisconnectReason = null
                             updateTelemetry(
                                 _telemetry.value.copy(
                                     state = StreamConnectionState.ERROR,
@@ -303,29 +380,39 @@ class CameraStreamService : Service() {
 
         val rot = engine.getCurrentRotationDegrees()
         streamClient?.sendControl(rot, engine.getCurrentCameraWireName())
+        lastDisconnectReason = null
         updateTelemetry(
             _telemetry.value.copy(
                 state = StreamConnectionState.STREAMING,
-                statusDetail = "Streaming to ${cfg.pairing.toDisplaySummary()}",
+                statusDetail = lStr(R.string.status_streaming_target, cfg.pairing.toDisplaySummary()),
                 rotationDegrees = rot,
-                activeLensLabel = cfg.lens.label,
+                activeLensLabel = cfg.lens.formatLabel(LocaleHelper.isKorean(this)),
                 activeEncoderName = cfg.encoder.codecName,
                 activeCodec = cfg.encoder.wireCodec.uppercase(),
                 width = cfg.width,
                 height = cfg.height
             )
         )
-        updateNotificationText("Streaming ${cfg.width}x${cfg.height} (${cfg.encoder.wireCodec.uppercase()}) to ${cfg.pairing.ip}")
+        updateNotificationText(
+            lStr(
+                R.string.notif_streaming_format,
+                cfg.width,
+                cfg.height,
+                cfg.encoder.wireCodec.uppercase(),
+                cfg.pairing.ip
+            )
+        )
     }
 
     private fun handleClientDisconnected(error: Throwable) {
         if (!isStreamingIntent.get()) return
 
         if (error is HandshakeRejectedException) {
+            lastStatusErrorResId = if (error.message == null) R.string.err_handshake_rejected else null
             updateTelemetry(
                 _telemetry.value.copy(
                     state = StreamConnectionState.ERROR,
-                    statusDetail = error.message ?: "Handshake rejected by PC"
+                    statusDetail = error.message ?: lStr(R.string.err_handshake_rejected)
                 )
             )
             stopStreamingInternal(stopService = true, preserveErrorTelemetry = true)
@@ -339,14 +426,17 @@ class CameraStreamService : Service() {
             reconnectAttempt == 3 -> 3000L
             else -> 5000L
         }
-        val msg = error.message ?: "Disconnected"
+        lastDisconnectReason = error.message
+        val msg = lastDisconnectReason ?: lStr(R.string.err_disconnected)
         updateTelemetry(
             _telemetry.value.copy(
                 state = StreamConnectionState.RECONNECTING,
-                statusDetail = "Reconnecting (#$reconnectAttempt): $msg"
+                statusDetail = lStr(R.string.status_reconnecting_attempt, reconnectAttempt, msg)
             )
         )
-        updateNotificationText("Reconnecting to ${activeConfig?.pairing?.ip.orEmpty()}…")
+        updateNotificationText(
+            lStr(R.string.notif_reconnecting_target, activeConfig?.pairing?.ip.orEmpty())
+        )
         mainHandler.removeCallbacks(reconnectRunnable)
         mainHandler.postDelayed(reconnectRunnable, delayMs)
     }
@@ -371,7 +461,7 @@ class CameraStreamService : Service() {
             updateTelemetry(
                 StreamTelemetry(
                     state = StreamConnectionState.IDLE,
-                    statusDetail = getString(R.string.status_idle)
+                    statusDetail = lStr(R.string.status_idle)
                 )
             )
         }
@@ -390,7 +480,7 @@ class CameraStreamService : Service() {
         val lensId = intent.getStringExtra(EXTRA_LENS_ID)
         val lens = lenses.firstOrNull { it.id == lensId } ?: lenses.firstOrNull() ?: return null
 
-        val encoders = VideoEncoderCatalog.discoverEncoders()
+        val encoders = VideoEncoderCatalog.discoverEncoders(LocaleHelper.isKorean(this))
         val encoderName = intent.getStringExtra(EXTRA_ENCODER_NAME)
         val encoder = encoders.firstOrNull { it.codecName == encoderName }
             ?: encoders.firstOrNull()
@@ -416,7 +506,8 @@ class CameraStreamService : Service() {
     }
 
     private fun startForegroundCompat() {
-        val notification = buildNotification("Initializing camera stream…")
+        ensureNotificationChannel()
+        val notification = buildNotification(lStr(R.string.notif_initializing))
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             ServiceCompat.startForeground(
                 this,
@@ -431,16 +522,14 @@ class CameraStreamService : Service() {
 
     private fun ensureNotificationChannel() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (nm.getNotificationChannel(CHANNEL_ID) == null) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                getString(R.string.notif_channel_name),
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = getString(R.string.notif_channel_desc)
-            }
-            nm.createNotificationChannel(channel)
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            lStr(R.string.notif_channel_name),
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = lStr(R.string.notif_channel_desc)
         }
+        nm.createNotificationChannel(channel)
     }
 
     private fun buildNotification(contentText: String): Notification {
@@ -465,12 +554,12 @@ class CameraStreamService : Service() {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(getString(R.string.notif_title))
+            .setContentTitle(lStr(R.string.notif_title))
             .setContentText(contentText)
             .setSmallIcon(R.drawable.ic_videocam)
             .setOngoing(true)
             .setContentIntent(contentPending)
-            .addAction(R.drawable.ic_videocam_off, getString(R.string.notif_stop_action), stopPending)
+            .addAction(R.drawable.ic_videocam_off, lStr(R.string.notif_stop_action), stopPending)
             .build()
     }
 

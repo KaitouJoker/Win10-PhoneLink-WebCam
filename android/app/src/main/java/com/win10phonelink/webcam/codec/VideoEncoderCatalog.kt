@@ -13,7 +13,7 @@ object VideoEncoderCatalog {
         MediaFormat.MIMETYPE_VIDEO_HEVC
     )
 
-    fun discoverEncoders(): List<EncoderOption> {
+    fun discoverEncoders(isKorean: Boolean = false): List<EncoderOption> {
         val codecList = MediaCodecList(MediaCodecList.ALL_CODECS)
         val discovered = LinkedHashMap<String, EncoderOption>()
 
@@ -56,16 +56,7 @@ object VideoEncoderCatalog {
                         (it.getSupportedFrameRatesFor(1920, 1080)?.upper ?: 0.0) >= 59.0
                 } ?: false
 
-                val badge = if (isHardware) "[HW 가속]" else "[SW 폴백]"
-                val codecTag = wireCodec.uppercase()
-                val hwNote = if (supports1080p60) "$vendor, 1080p60" else vendor
-                val displayName = if (isHardware) {
-                    "$badge $codecTag • ${info.name} ($hwNote)"
-                } else {
-                    "$badge $codecTag • ${info.name}"
-                }
-
-                discovered[key] = EncoderOption(
+                val option = EncoderOption(
                     codecName = info.name,
                     mimeType = matchedMime,
                     wireCodec = wireCodec,
@@ -73,8 +64,11 @@ object VideoEncoderCatalog {
                     vendorLabel = vendor,
                     supportsCbr = supportsCbr,
                     supportsVbr = supportsVbr,
-                    displayName = displayName,
+                    displayName = "",
                     supports1080p60 = supports1080p60
+                )
+                discovered[key] = option.copy(
+                    displayName = option.formatDisplayName(isKorean)
                 )
             }
         }
@@ -87,8 +81,8 @@ object VideoEncoderCatalog {
         )
     }
 
-    fun discoverHardwareEncoders(): List<EncoderOption> {
-        val all = discoverEncoders()
+    fun discoverHardwareEncoders(isKorean: Boolean = false): List<EncoderOption> {
+        val all = discoverEncoders(isKorean)
         val hw = all.filter { it.isHardware }
         return hw.ifEmpty { all }
     }

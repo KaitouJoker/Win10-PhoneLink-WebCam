@@ -18,7 +18,7 @@
     <string name="btn_sync_idr">IDR</string>
     <string name="btn_grant_camera">Grant Camera Permission</string>
 
-    <string name="section_stream_settings">Stream Settings (Resolution / Codec / Encoder)</string>
+    <string name="section_stream_settings">Stream Settings (Resolution / Codec / Encoder / Language)</string>
     <string name="label_camera_lens">Camera Lens</string>
     <string name="label_codec">Video Codec</string>
     <string name="label_encoder">Hardware Encoder</string>
@@ -55,7 +55,15 @@
     <string name="notif_channel_name">Camera Streaming</string>
     <string name="notif_channel_desc">Keeps Android camera streaming active to Windows 10 PC.</string>
     <string name="notif_title">Streaming Webcam to Windows 10</string>
+    <string name="notif_initializing">Initializing camera stream…</string>
+    <string name="notif_streaming_format">Streaming %1$dx%2$d (%3$s) to %4$s</string>
+    <string name="notif_reconnecting_target">Reconnecting to %1$s…</string>
     <string name="notif_stop_action">Stop</string>
+    <string name="status_connecting_target">Connecting to %1$s:%2$d…</string>
+    <string name="status_streaming_target">Streaming to %1$s</string>
+    <string name="status_reconnecting_attempt">Reconnecting (#%1$d): %2$s</string>
+    <string name="err_handshake_rejected">Handshake rejected by PC</string>
+    <string name="err_disconnected">Disconnected</string>
     <string name="preview_placeholder">Camera preview appears here once permission is granted.</string>
 
     <string name="toast_idr_requested">Requested IDR keyframe</string>

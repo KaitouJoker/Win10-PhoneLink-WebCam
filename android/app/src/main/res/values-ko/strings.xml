@@ -55,7 +55,15 @@
     <string name="notif_channel_name">카메라 스트리밍</string>
     <string name="notif_channel_desc">Windows 10 PC로 Android 카메라 영상을 계속 전송합니다.</string>
     <string name="notif_title">Windows 10 PC로 웹캠 송출 중</string>
+    <string name="notif_initializing">카메라 스트림 초기화 중…</string>
+    <string name="notif_streaming_format">%4$s로 %1$dx%2$d (%3$s) 송출 중</string>
+    <string name="notif_reconnecting_target">%1$s에 재연결 중…</string>
     <string name="notif_stop_action">중지</string>
+    <string name="status_connecting_target">%1$s:%2$d에 연결 중…</string>
+    <string name="status_streaming_target">%1$s로 송출 중</string>
+    <string name="status_reconnecting_attempt">재연결 중 (#%1$d): %2$s</string>
+    <string name="err_handshake_rejected">PC가 연결 핸드셰이크를 거부했습니다</string>
+    <string name="err_disconnected">연결이 끊어졌습니다</string>
     <string name="preview_placeholder">카메라 권한을 허용하면 여기에 미리보기가 표시됩니다.</string>
 
     <string name="toast_idr_requested">IDR 키프레임을 요청했습니다</string>
