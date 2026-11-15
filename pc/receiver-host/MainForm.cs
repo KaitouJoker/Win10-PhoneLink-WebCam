@@ -511,6 +511,19 @@ public sealed class MainForm : Form
             _server.Start();
             _uiTimer.Start();
         };
+        Shown += (_, _) =>
+        {
+            if (VcamRegistration.FindVcamDllPath() != null && !VcamRegistration.IsRegisteredInHklm(out _))
+            {
+                (bool ok, string msg) = VcamRegistration.Register();
+                AppendLog($"[VCam] Auto-register HKLM: {msg}");
+                RefreshVcamRegistrationStatus();
+                if (!ok)
+                {
+                    AppendLog("[VCam] Click 'Register VCam' with Administrator rights so Discord detects the camera.");
+                }
+            }
+        };
         FormClosing += (_, _) =>
         {
             _uiTimer.Stop();

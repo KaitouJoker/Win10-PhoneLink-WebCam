@@ -70,6 +70,13 @@ public static class VcamRegistration
             using RegistryKey? inst = hklm.OpenSubKey($@"SOFTWARE\Classes\CLSID\{VideoInputCategoryClsid}\Instance\{VcamClsid}");
             if (inst == null) return false;
 
+            if (FindVcamDllPath(Dll32FileName) != null)
+            {
+                using RegistryKey hklm32 = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry32);
+                using RegistryKey? inst32 = hklm32.OpenSubKey($@"SOFTWARE\Classes\CLSID\{VideoInputCategoryClsid}\Instance\{VcamClsid}");
+                if (inst32 == null) return false;
+            }
+
             registeredDllPath = path;
             return true;
         }

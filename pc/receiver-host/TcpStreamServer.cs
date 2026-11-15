@@ -530,7 +530,7 @@ public sealed class TcpStreamServer : IDisposable
         }
     }
 
-    private void OnDecodedFrame(byte[] bgraFrame, int w, int h)
+    private void OnDecodedFrame(byte[] nv12Frame, int w, int h)
     {
         _currentWidth = w;
         _currentHeight = h;
@@ -544,8 +544,8 @@ public sealed class TcpStreamServer : IDisposable
             return;
         }
 
-        ReadOnlySpan<byte> normalized = FrameTransformer.NormalizeBgra32(
-            bgraFrame,
+        ReadOnlySpan<byte> normalized = FrameTransformer.NormalizeNv12ToBgra32(
+            nv12Frame,
             w,
             h,
             _rotationQuarterTurns,

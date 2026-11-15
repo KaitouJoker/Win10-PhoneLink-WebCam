@@ -393,8 +393,8 @@ class CameraStreamService : Service() {
 
         val width = intent.getIntExtra(EXTRA_WIDTH, 1280)
         val height = intent.getIntExtra(EXTRA_HEIGHT, 720)
-        val fps = intent.getIntExtra(EXTRA_FPS, 30)
-        val bitrate = intent.getIntExtra(EXTRA_BITRATE_BPS, 6_000_000)
+        val fps = intent.getIntExtra(EXTRA_FPS, 60)
+        val bitrate = intent.getIntExtra(EXTRA_BITRATE_BPS, 20_000_000)
         val rotOrdinal = intent.getIntExtra(EXTRA_ROTATION_ORDINAL, 0)
         val rotMode = RotationMode.values().getOrElse(rotOrdinal) { RotationMode.AUTO }
 

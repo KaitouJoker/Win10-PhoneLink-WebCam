@@ -45,7 +45,7 @@ if exist "%DLL32%" if exist "%REG32%" (
 
 net session >nul 2>&1
 if not errorlevel 1 (
-    echo [OK] Registered 64-bit and 32-bit Virtual Camera in HKLM + HKCU.
+    echo [OK] Registered 64-bit and 32-bit Virtual Camera in HKLM.
 ) else (
     echo [OK] Registered Virtual Camera in HKCU only.
 )

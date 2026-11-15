@@ -6,6 +6,8 @@
 #endif
 #include <windows.h>
 #include <dbt.h>
+#include <devpropdef.h>
+#include <swdevice.h>
 #include <dshow.h>
 #include <objbase.h>
 #include <shlwapi.h>
@@ -22,18 +24,13 @@ HMODULE g_hModule = nullptr;
 std::atomic<long> g_dllRefCount{0};
 
 constexpr wchar_t kVideoInputCategoryClsidStr[] = L"{860BB310-5D01-11d0-BD3B-00A0C911CE86}";
+constexpr GUID kKsCategoryVideoCamera = { 0xe5323777, 0xf976, 0x4f5b, { 0x9b, 0x55, 0xb9, 0x46, 0x99, 0xc4, 0x6e, 0x44 } };
+constexpr GUID kKsCategoryCapture = { 0x65e8773d, 0x8f56, 0x11d0, { 0xa3, 0xb9, 0x00, 0xa0, 0xc9, 0x22, 0x31, 0x96 } };
 
-// Build serialized FilterData blob matching IFilterMapper2 v2 format as fallback when
-// non-elevated devenum.dll refuses HKLM writes.
+// Build serialized FilterData blob matching standard REGFILTER2 v2 binary layout (OBS-compatible):
+// version=2, merit=0x00200000, cPins=1, flags=0x08 (REG_PINFLAG_B_OUTPUT), nMediaTypes=1,
+// MEDIATYPE_Video + MEDIASUBTYPE_NV12.
 std::vector<uint8_t> BuildFallbackFilterDataBlob() {
-    // Minimal REGFILTER2 v2 binary layout:
-    // Header (16 bytes): dwVersion=2, dwMerit=MERIT_DO_NOT_USE(0x00200000), cPins=1, reserved=0
-    // Pin (24 bytes): signature='0pi3', dwFlags=REG_PINFLAG_B_OUTPUT(8), cInstances=1? -> Wait:
-    // Matching observed devenum format:
-    // [dwVersion=2][dwMerit=0x200000][cPins=1][0]
-    // [tag='0pi3'][dwFlags=8][dwReserved=0][nMediaTypes=1][nMediums=0][offsetPinCat=0]
-    // [tag='0ty3'][0][offsetMajor][offsetMinor]
-    // [16B MEDIATYPE_Video][16B GUID_NULL]
     const uint32_t offsetMajor = 56;
     const uint32_t offsetMinor = 72;
 
@@ -50,7 +47,7 @@ std::vector<uint8_t> BuildFallbackFilterDataBlob() {
     // Pin entry at offset 16 (24 bytes)
     writeU32(16, 0x33697030);      // '0pi3'
     writeU32(20, REG_PINFLAG_B_OUTPUT);
-    writeU32(24, 0);               // reserved / rendered? 0
+    writeU32(24, 0);               // cInstances = 0 (matches standard DirectShow / OBS layout)
     writeU32(28, 1);               // 1 media type summary
     writeU32(32, 0);               // 0 mediums
     writeU32(36, 0);               // no category offset
@@ -62,7 +59,7 @@ std::vector<uint8_t> BuildFallbackFilterDataBlob() {
     writeU32(52, offsetMinor);
 
     std::memcpy(buf.data() + offsetMajor, &MEDIATYPE_Video, sizeof(GUID));
-    std::memcpy(buf.data() + offsetMinor, &GUID_NULL, sizeof(GUID));
+    std::memcpy(buf.data() + offsetMinor, &MEDIASUBTYPE_NV12, sizeof(GUID));
     return buf;
 }
 
@@ -184,6 +181,82 @@ void BroadcastDeviceChange() noexcept {
         &dwResult);
 }
 
+struct SwDevCreateCtx {
+    HANDLE hEvent;
+    HRESULT createHr;
+};
+
+VOID WINAPI OnSwDeviceCreate(
+    HSWDEVICE /*hSwDevice*/,
+    HRESULT CreateResult,
+    PVOID pContext,
+    PCWSTR /*pszDeviceInstanceId*/) noexcept {
+    if (auto* ctx = static_cast<SwDevCreateCtx*>(pContext)) {
+        ctx->createHr = CreateResult;
+        if (ctx->hEvent) {
+            SetEvent(ctx->hEvent);
+        }
+    }
+}
+
+void NotifyVideoCaptureDeviceWatchers() noexcept {
+    // Pulse a transient SWD VideoCapture interface so WinRT DeviceInformation.CreateWatcher
+    // (used by Discord's VideoInputDevicePoller) fires Added/Removed and re-scans DirectShow.
+    using FnSwDeviceCreate = decltype(&::SwDeviceCreate);
+    using FnSwDeviceInterfaceRegister = decltype(&::SwDeviceInterfaceRegister);
+    using FnSwDeviceClose = decltype(&::SwDeviceClose);
+
+    HMODULE hCfgMgr = LoadLibraryW(L"cfgmgr32.dll");
+    if (hCfgMgr != nullptr) {
+        const auto pSwDeviceCreate =
+            reinterpret_cast<FnSwDeviceCreate>(GetProcAddress(hCfgMgr, "SwDeviceCreate"));
+        const auto pSwDeviceInterfaceRegister =
+            reinterpret_cast<FnSwDeviceInterfaceRegister>(GetProcAddress(hCfgMgr, "SwDeviceInterfaceRegister"));
+        const auto pSwDeviceClose =
+            reinterpret_cast<FnSwDeviceClose>(GetProcAddress(hCfgMgr, "SwDeviceClose"));
+
+        HANDLE hEvent = (pSwDeviceCreate && pSwDeviceClose)
+            ? CreateEventW(nullptr, TRUE, FALSE, nullptr)
+            : nullptr;
+        if (hEvent != nullptr) {
+            SwDevCreateCtx ctx{ hEvent, E_FAIL };
+            SW_DEVICE_CREATE_INFO createInfo{};
+            createInfo.cbSize = sizeof(createInfo);
+            createInfo.pszInstanceId = L"Win10PhoneLinkVCamTrigger";
+            createInfo.pszzHardwareIds = L"SWD\\Win10PhoneLinkVCam\0";
+            createInfo.pszzCompatibleIds = L"SWD\\GenericRaw\0";
+            createInfo.pszDeviceDescription = ::kVcamFriendlyName;
+            createInfo.CapabilityFlags = SWDeviceCapabilitiesSilentInstall;
+
+            HSWDEVICE hSwDevice = nullptr;
+            const HRESULT hr = pSwDeviceCreate(
+                L"Win10PhoneLinkVCam",
+                L"HTREE\\ROOT\\0",
+                &createInfo,
+                0,
+                nullptr,
+                OnSwDeviceCreate,
+                &ctx,
+                &hSwDevice);
+            if (SUCCEEDED(hr) && hSwDevice != nullptr) {
+                if (WaitForSingleObject(hEvent, 1000) == WAIT_OBJECT_0 &&
+                    SUCCEEDED(ctx.createHr) &&
+                    pSwDeviceInterfaceRegister != nullptr) {
+                    pSwDeviceInterfaceRegister(
+                        hSwDevice, &kKsCategoryVideoCamera, L"VCamNotify", 0, nullptr, TRUE, nullptr);
+                    pSwDeviceInterfaceRegister(
+                        hSwDevice, &kKsCategoryCapture, L"VCamNotify", 0, nullptr, TRUE, nullptr);
+                    Sleep(150);
+                }
+                pSwDeviceClose(hSwDevice);
+            }
+            CloseHandle(hEvent);
+        }
+        FreeLibrary(hCfgMgr);
+    }
+    BroadcastDeviceChange();
+}
+
 HRESULT RegisterWithFilterMapper(HKEY classesRootOverride) {
     const HRESULT coHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     const bool needUninit = SUCCEEDED(coHr);
@@ -206,7 +279,7 @@ HRESULT RegisterWithFilterMapper(HKEY classesRootOverride) {
 
         REGFILTERPINS2 pinDesc{};
         pinDesc.dwFlags = REG_PINFLAG_B_OUTPUT;
-        pinDesc.cInstances = 1;
+        pinDesc.cInstances = 0;
         pinDesc.nMediaTypes = static_cast<UINT>(sizeof(pinTypes) / sizeof(pinTypes[0]));
         pinDesc.lpMediaType = pinTypes;
         pinDesc.nMediums = 0;
@@ -314,19 +387,27 @@ extern "C" HRESULT __stdcall DllRegisterServer() {
     HRESULT lmHr = E_ACCESSDENIED;
     HKEY hLmClasses = nullptr;
     if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"Software\\Classes", 0, KEY_READ | KEY_WRITE, &hLmClasses) == ERROR_SUCCESS) {
+        // Clear any per-user keys first so HKCU does not shadow HKLM under HKEY_CLASSES_ROOT.
+        HKEY hCuCleanup = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Classes", 0, KEY_READ | KEY_WRITE, &hCuCleanup) == ERROR_SUCCESS) {
+            DeleteKeysUnderRoot(hCuCleanup);
+            RegCloseKey(hCuCleanup);
+        }
+
         lmHr = RegisterComServerUnderRoot(hLmClasses, dllPath);
         if (SUCCEEDED(lmHr)) {
-            lmHr = RegisterWithFilterMapper(nullptr);
-            if (FAILED(lmHr)) {
-                lmHr = RegisterCategoryInstanceDirect(hLmClasses);
-            } else {
-                EnsureCategoryDescription(hLmClasses);
-            }
+            RegisterWithFilterMapper(hLmClasses);
+            lmHr = RegisterCategoryInstanceDirect(hLmClasses);
         }
         RegCloseKey(hLmClasses);
     }
 
-    // Always register under HKCU as well so current-user DirectShow callers work without elevation.
+    if (SUCCEEDED(lmHr)) {
+        NotifyVideoCaptureDeviceWatchers();
+        return lmHr;
+    }
+
+    // Non-elevated fallback: register under HKCU only when HKLM is not writable.
     HRESULT cuHr = E_FAIL;
     HKEY hCuClasses = nullptr;
     const LSTATUS cuStatus = RegCreateKeyExW(
@@ -354,8 +435,8 @@ extern "C" HRESULT __stdcall DllRegisterServer() {
         cuHr = HRESULT_FROM_WIN32(cuStatus);
     }
 
-    BroadcastDeviceChange();
-    return SUCCEEDED(lmHr) ? lmHr : cuHr;
+    NotifyVideoCaptureDeviceWatchers();
+    return cuHr;
 }
 
 extern "C" HRESULT __stdcall DllUnregisterServer() {
@@ -394,6 +475,6 @@ extern "C" HRESULT __stdcall DllUnregisterServer() {
         RegCloseKey(hCuClasses);
     }
 
-    BroadcastDeviceChange();
+    NotifyVideoCaptureDeviceWatchers();
     return S_OK;
 }

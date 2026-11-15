@@ -143,7 +143,7 @@ class StreamClient(
                 tcpNoDelay = true
                 keepAlive = true
                 trafficClass = 0x10
-                sendBufferSize = 262_144
+                sendBufferSize = 524_288
                 soTimeout = HANDSHAKE_TIMEOUT_MS
                 connect(InetSocketAddress(pairing.ip, pairing.port), CONNECT_TIMEOUT_MS)
             }
@@ -186,32 +186,40 @@ class StreamClient(
             onConnected()
 
             val headerBuf = ByteBuffer.allocate(16).order(ByteOrder.BIG_ENDIAN)
+            val batch = ArrayList<QueuedPacket>(16)
             var statsWindowStart = System.currentTimeMillis()
             var windowFrames = 0
             var windowBytes = 0L
 
             while (running.get()) {
-                val packet: QueuedPacket? = lock.withLock {
+                batch.clear()
+                lock.withLock {
                     if (queue.isEmpty() && running.get()) {
                         notEmpty.await(HEARTBEAT_INTERVAL_MS, TimeUnit.MILLISECONDS)
                     }
-                    if (!running.get()) null else queue.removeFirstOrNull()
+                    if (running.get()) {
+                        while (queue.isNotEmpty()) {
+                            batch.add(queue.removeFirst())
+                        }
+                    }
                 }
 
                 if (!running.get()) break
 
                 val nowMs = System.currentTimeMillis()
-                if (packet != null) {
-                    writeFramedPacket(rawOut, headerBuf, packet)
+                if (batch.isNotEmpty()) {
+                    for (pkt in batch) {
+                        writeFramedPacket(rawOut, headerBuf, pkt)
+                        sentTotal++
+                        windowBytes += 16L + pkt.payload.size
+                        if (pkt.type == PACKET_TYPE_VIDEO &&
+                            (pkt.flags and FLAG_CODEC_CONFIG) == 0
+                        ) {
+                            windowFrames++
+                        }
+                    }
                     rawOut.flush()
                     lastWriteMs = nowMs
-                    sentTotal++
-                    windowBytes += 16L + packet.payload.size
-                    if (packet.type == PACKET_TYPE_VIDEO &&
-                        (packet.flags and FLAG_CODEC_CONFIG) == 0
-                    ) {
-                        windowFrames++
-                    }
                 } else if (nowMs - lastWriteMs >= HEARTBEAT_INTERVAL_MS) {
                     val hb = QueuedPacket(
                         type = PACKET_TYPE_HEARTBEAT,
@@ -324,7 +332,7 @@ class StreamClient(
         private const val CONNECT_TIMEOUT_MS = 5_000
         private const val HANDSHAKE_TIMEOUT_MS = 8_000
         private const val HEARTBEAT_INTERVAL_MS = 2_000L
-        private const val MAX_QUEUE_SIZE = 16
+        private const val MAX_QUEUE_SIZE = 60
 
         private val MAGIC_PLWC = byteArrayOf(0x50, 0x4C, 0x57, 0x43) // "PLWC"
         private val HANDSHAKE_OK = byteArrayOf(0x4F, 0x4B, 0x0D, 0x0A) // "OK\r\n"

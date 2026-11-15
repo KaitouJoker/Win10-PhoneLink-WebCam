@@ -2,6 +2,7 @@ package com.win10phonelink.webcam.camera
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
@@ -18,6 +19,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Range
+import android.util.Size
 import android.view.OrientationEventListener
 import android.view.Surface
 import com.win10phonelink.webcam.model.CameraLensOption
@@ -76,7 +78,12 @@ class CameraStreamEngine(private val context: Context) {
     @Volatile
     private var cachedCodecConfig: ByteArray? = null
 
-    private var targetFps: Int = 30
+    @Volatile
+    private var activePhysicalCameraId: String? = null
+
+    private var targetWidth: Int = 1280
+    private var targetHeight: Int = 720
+    private var targetFps: Int = 60
     private var callback: Callback? = null
     private var orientationListener: OrientationEventListener? = null
 
@@ -106,7 +113,10 @@ class CameraStreamEngine(private val context: Context) {
         this.currentLens = lens
         this.currentRotationMode = rotationMode
         this.previewSurface = initialPreviewSurface
+        this.targetWidth = width
+        this.targetHeight = height
         this.targetFps = fps
+        this.activePhysicalCameraId = null
         this.cachedCodecConfig = null
 
         val thread = HandlerThread("CameraStreamBg").apply { start() }
@@ -307,8 +317,17 @@ class CameraStreamEngine(private val context: Context) {
             )
             setInteger(MediaFormat.KEY_BIT_RATE, bitrateBps)
             setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
-            if (encoder.supportsCbr) {
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
+            setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 1_000_000L / fps.coerceAtLeast(1))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+            }
+            if (fps >= 60 && encoder.supportsVbr) {
+                setInteger(
+                    MediaFormat.KEY_BITRATE_MODE,
+                    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
+                )
+            } else if (encoder.supportsCbr) {
                 setInteger(
                     MediaFormat.KEY_BITRATE_MODE,
                     MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
@@ -324,7 +343,7 @@ class CameraStreamEngine(private val context: Context) {
             }
             if (encoder.isHardware) {
                 setInteger(MediaFormat.KEY_PRIORITY, 0)
-                setInteger(MediaFormat.KEY_OPERATING_RATE, fps)
+                setInteger(MediaFormat.KEY_OPERATING_RATE, maxOf(fps, 60))
             }
         }
 
@@ -338,7 +357,7 @@ class CameraStreamEngine(private val context: Context) {
                 )
                 setInteger(MediaFormat.KEY_BIT_RATE, bitrateBps)
                 setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
             }
             codec.configure(minimal, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         }
@@ -535,7 +554,12 @@ class CameraStreamEngine(private val context: Context) {
         }
         captureSession = null
 
-        val physId = if (usePhysicalId) lens.physicalCameraId else null
+        val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val canUsePhys = usePhysicalId &&
+            lens.physicalCameraId != null &&
+            supportsPhysical60Fps(manager, lens.physicalCameraId, targetWidth, targetHeight, targetFps)
+        val physId = if (canUsePhys) lens.physicalCameraId else null
+        activePhysicalCameraId = physId
         val outputs = mutableListOf<OutputConfiguration>()
 
         outputs.add(
@@ -589,6 +613,28 @@ class CameraStreamEngine(private val context: Context) {
         }
     }
 
+    private fun supportsPhysical60Fps(
+        manager: CameraManager,
+        physicalId: String,
+        width: Int,
+        height: Int,
+        desiredFps: Int
+    ): Boolean {
+        if (desiredFps < 60) return true
+        return try {
+            val chars = manager.getCameraCharacteristics(physicalId)
+            val ranges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+            val hasHighFpsRange = ranges?.any { it.upper >= desiredFps } == true
+            if (!hasHighFpsRange) return false
+
+            val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return false
+            val minDurationNs = map.getOutputMinFrameDuration(SurfaceTexture::class.java, Size(width, height))
+            minDurationNs in 1L..18_000_000L
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     private fun startRepeatingCapture(
         camera: CameraDevice,
         session: CameraCaptureSession,
@@ -599,7 +645,12 @@ class CameraStreamEngine(private val context: Context) {
     ) {
         try {
             val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-            val chars = manager.getCameraCharacteristics(lens.logicalCameraId)
+            val activeCamId = activePhysicalCameraId ?: lens.logicalCameraId
+            val chars = try {
+                manager.getCameraCharacteristics(activeCamId)
+            } catch (_: Exception) {
+                manager.getCameraCharacteristics(lens.logicalCameraId)
+            }
             val fpsRange = pickBestFpsRange(chars, targetFps)
             val stabModes = chars.get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES)
 
@@ -608,9 +659,19 @@ class CameraStreamEngine(private val context: Context) {
                 if (activePreview != null && activePreview.isValid) {
                     addTarget(activePreview)
                 }
+                set(
+                    CaptureRequest.CONTROL_CAPTURE_INTENT,
+                    CaptureRequest.CONTROL_CAPTURE_INTENT_VIDEO_RECORD
+                )
                 set(CaptureRequest.CONTROL_AE_LOCK, false)
                 if (fpsRange != null) {
                     set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange)
+                }
+                if (targetFps >= 60) {
+                    set(
+                        CaptureRequest.SENSOR_FRAME_DURATION,
+                        1_000_000_000L / targetFps.coerceAtLeast(1)
+                    )
                 }
                 set(
                     CaptureRequest.CONTROL_AF_MODE,
@@ -632,8 +693,10 @@ class CameraStreamEngine(private val context: Context) {
                         CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF
                     )
                 }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    val zoom = lens.zoomRatio ?: if (lens.wireName == "ultrawide" && lens.physicalCameraId == null) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+                    (activePhysicalCameraId == null || lens.zoomRatio != null)
+                ) {
+                    val zoom = lens.zoomRatio ?: if (lens.wireName == "ultrawide") {
                         val range = chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
                         if (range != null && range.lower <= 0.65f) maxOf(range.lower, 0.6f) else null
                     } else null

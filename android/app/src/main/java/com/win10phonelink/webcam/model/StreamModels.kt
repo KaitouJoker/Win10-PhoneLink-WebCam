@@ -53,7 +53,12 @@ enum class BitratePreset(val bps: Int, val label: String) {
     MBPS_4(4_000_000, "4 Mbps"),
     MBPS_6(6_000_000, "6 Mbps"),
     MBPS_8(8_000_000, "8 Mbps"),
-    MBPS_12(12_000_000, "12 Mbps");
+    MBPS_12(12_000_000, "12 Mbps"),
+    MBPS_16(16_000_000, "16 Mbps"),
+    MBPS_20(20_000_000, "20 Mbps"),
+    MBPS_25(25_000_000, "25 Mbps"),
+    MBPS_35(35_000_000, "35 Mbps"),
+    MBPS_50(50_000_000, "50 Mbps");
 
     override fun toString(): String = label
 }

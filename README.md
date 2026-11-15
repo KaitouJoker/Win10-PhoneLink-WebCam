@@ -13,14 +13,14 @@ Windows 11의 Phone Link(휴대폰과 연결) 네이티브 웹캠은 Windows 11 
 - **QR 코드 간편 연결**: PC 수신기 화면의 QR 코드를 스캔하면 IP, 포트, 토큰뿐 아니라 PC에서 설정한 **해상도·코덱**까지 스마트폰 앱과 자동 동기화됩니다.
 - **PC GPU 하드웨어 디코딩 가속**: **NVIDIA NVDEC** (`h264_cuvid` / `hevc_cuvid`, 다중 GPU 선택 지원), **Direct3D 11 (`D3D11VA`)**, **Software CPU** 선택 가능.
 - **미리보기 마우스 우클릭 ON/OFF (리소스 절감 모드)**: 연결 중 실시간 미리보기 창에서 **마우스 우클릭 → 실시간 미리보기 화면 끄기**를 선택하면 비트맵 복사·UI 렌더링을 즉시 중단해 CPU/메모리를 절약하면서도 가상 카메라 출력(`Local\PhoneLinkCam_Shm`, 최대 60fps)은 정상 유지됩니다.
-- **60fps 저지연 파이프라인 및 Discord/Chrome/OBS 호환**: FFmpeg `-framerate` + `-fps_mode passthrough` 및 DirectShow x64/x86(`HKLM` + `WOW6432Node`) 이중 등록, `WM_DEVICECHANGE` 브로드캐스트를 지원합니다.
+- **60fps NV12 저지연 파이프라인 및 Discord/Chrome/OBS 호환**: PC 수신기는 FFmpeg `nv12` 원시 출력 + 트리플 버퍼 비동기 디스패치 + 병렬 `NV12→BGRA32` 회전/리사이즈를 통해 1080p60 스트림을 드롭 없이 처리합니다. DirectShow x64/x86 `HKLM`(시스템 전역 `WOW6432Node` 포함) 등록과 `SwDevice` 기반 비디오 캡처 장치 알림을 통해 Discord 등 데스크톱 앱에서 가상 카메라를 인식합니다.
 
 ---
 
 ## 1. 포터블 배포 폴더 (`dist\Portable-Win10-PhoneLink-WebCam\`)
 
 - [`install_all.bat`](dist/Portable-Win10-PhoneLink-WebCam/install_all.bat) — **통합 설치·관리 스크립트** (가상 카메라 등록, Android APK ADB 설치, USB 포트 포워딩, 환경 점검, 수신기 실행)
-- `register_camera.bat` / `unregister_camera.bat` — 관리자 권한(UAC)으로 x64(`vcam-dshow.dll`) + x86(`vcam-dshow32.dll`) 가상 카메라를 `HKLM`·`WOW6432Node`·`HKCU`에 등록/해제
+- `register_camera.bat` / `unregister_camera.bat` — 관리자 권한(UAC)으로 x64(`vcam-dshow.dll`) + x86(`vcam-dshow32.dll`) 가상 카메라를 `HKLM`·`WOW6432Node`에 등록/해제 (`HKLM` 미등록 상태에서 실행 시 수신기가 자동 등록을 요청)
 - `PhoneCamReceiver.exe` — PC 수신기 및 설정 GUI (.NET 10 `net10.0-windows` win-x64 자체 포함 단일 실행 파일)
 - `vcam-dshow.dll` / `vcam-dshow32.dll` — Windows 10 DirectShow 가상 카메라 COM 필터 (x64 / x86)
 - `Win10-PhoneCam.apk` — Android 컴패니언 앱 (`com.win10phonelink.webcam`)
@@ -54,7 +54,7 @@ Windows 11의 Phone Link(휴대폰과 연결) 네이티브 웹캠은 Windows 11 
 - **디코더 장치 설정**: `NVIDIA NVDEC (CUDA / CUVID)`, `Direct3D 11 (D3D11VA)`, `Software CPU` 및 GPU 장치 선택
 
 ### Android 컴패니언 앱 (`Win10 PhoneCam`)
-- 최초 실행 시 **기기 지원 HW 가속 인코더 목록** 대화상자에서 코덱/벤더/`1080p60` 지원 여부를 확인해 바로 선택할 수 있으며, 메인 화면의 **`장치 지원 HW 가속 목록 확인 / 선택`** 버튼 또는 스피너에서 카메라 렌즈, 해상도, FPS(30/60), 코덱, 인코더 장치, 비트레이트, 회전 모드를 변경할 수 있습니다.
+- 최초 실행 시 **기기 지원 HW 가속 인코더 목록** 대화상자에서 코덱/벤더/`1080p60` 지원 여부를 확인해 바로 선택할 수 있으며, 메인 화면의 **`장치 지원 HW 가속 목록 확인 / 선택`** 버튼 또는 스피너에서 카메라 렌즈, 해상도, FPS(30/60), 코덱, 인코더 장치, 비트레이트(**4 / 6 / 8 / 12 / 16 / 20 / 25 / 35 / 50 Mbps**), 회전 모드를 변경할 수 있습니다. 60fps 선택 시 VBR 모드 및 `KEY_REPEAT_PREVIOUS_FRAME_AFTER`를 적용해 대역폭 한계로 인한 프레임 드롭을 방지합니다.
 
 ---
 

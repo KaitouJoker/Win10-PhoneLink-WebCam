@@ -73,8 +73,8 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     private var selectedCodec: CodecFamily = CodecFamily.H264
     private var selectedEncoder: EncoderOption? = null
     private var selectedResolution: ResolutionPreset = ResolutionPreset.HD_720P
-    private var selectedFps: FpsPreset = FpsPreset.FPS_30
-    private var selectedBitrate: BitratePreset = BitratePreset.MBPS_6
+    private var selectedFps: FpsPreset = FpsPreset.FPS_60
+    private var selectedBitrate: BitratePreset = BitratePreset.MBPS_20
     private var selectedRotation: RotationMode = RotationMode.AUTO
 
     private var suppressSpinnerEvents: Boolean = true
@@ -315,8 +315,8 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         val savedCodecName = prefs.getString(KEY_CODEC, CodecFamily.H264.name)
         val savedEncoderName = prefs.getString(KEY_ENCODER_NAME, null)
         val savedResName = prefs.getString(KEY_RESOLUTION, ResolutionPreset.HD_720P.name)
-        val savedFpsName = prefs.getString(KEY_FPS, FpsPreset.FPS_30.name)
-        val savedBitrateName = prefs.getString(KEY_BITRATE, BitratePreset.MBPS_6.name)
+        val savedFpsName = prefs.getString(KEY_FPS, FpsPreset.FPS_60.name)
+        val savedBitrateName = prefs.getString(KEY_BITRATE, BitratePreset.MBPS_20.name)
         val savedRotName = prefs.getString(KEY_ROTATION, RotationMode.AUTO.name)
 
         selectedCodec = CodecFamily.values().firstOrNull { it.name == savedCodecName }
@@ -324,9 +324,9 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         selectedResolution = ResolutionPreset.values().firstOrNull { it.name == savedResName }
             ?: ResolutionPreset.HD_720P
         selectedFps = FpsPreset.values().firstOrNull { it.name == savedFpsName }
-            ?: FpsPreset.FPS_30
+            ?: FpsPreset.FPS_60
         selectedBitrate = BitratePreset.values().firstOrNull { it.name == savedBitrateName }
-            ?: BitratePreset.MBPS_6
+            ?: BitratePreset.MBPS_20
         selectedRotation = RotationMode.values().firstOrNull { it.name == savedRotName }
             ?: RotationMode.AUTO
 

@@ -4,7 +4,8 @@ using System.Text.RegularExpressions;
 namespace PhoneCamReceiver;
 
 /// <summary>
-/// Manages an FFmpeg child process that decodes raw Annex-B H.264/HEVC stdin into BGRA32 stdout frames.
+/// Manages an FFmpeg child process that decodes raw Annex-B H.264/HEVC stdin into NV12 stdout frames
+/// and dispatches them asynchronously via a triple-buffered latest-frame worker so stdout never blocks.
 /// </summary>
 public sealed partial class FfmpegDecoderSession : IDisposable
 {
@@ -12,12 +13,20 @@ public sealed partial class FfmpegDecoderSession : IDisposable
     private readonly Stream _stdin;
     private readonly Stream _stdout;
     private readonly object _writeLock = new();
+    private readonly object _frameSlotLock = new();
+    private readonly AutoResetEvent _frameReadySignal = new(false);
     private readonly CancellationTokenSource _cts = new();
     private readonly TaskCompletionSource<bool> _sizeReadyTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Task _stderrTask;
     private readonly Task _stdoutTask;
+    private readonly Task _consumerTask;
     private readonly Action<byte[], int, int> _onFrame;
     private readonly Action<string> _onLog;
+
+    private byte[]? _readyBuf;
+    private byte[]? _spareBuf;
+    private int _readyW;
+    private int _readyH;
 
     private volatile int _width;
     private volatile int _height;
@@ -60,6 +69,11 @@ public sealed partial class FfmpegDecoderSession : IDisposable
         _stdin = _process.StandardInput.BaseStream;
         _stdout = _process.StandardOutput.BaseStream;
 
+        _consumerTask = Task.Factory.StartNew(
+            () => ConsumeFramesLoop(_cts.Token),
+            _cts.Token,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
         _stderrTask = Task.Run(() => ReadStderrLoop(_cts.Token));
         _stdoutTask = Task.Run(() => ReadStdoutLoop(_cts.Token));
     }
@@ -88,20 +102,21 @@ public sealed partial class FfmpegDecoderSession : IDisposable
     {
         string c = Protocol.NormalizeCodec(codec);
         int safeFps = fps > 0 ? Math.Clamp(fps, 15, 120) : 60;
-        string devFlag = gpuDeviceIndex >= 0 ? $" -hwaccel_device {gpuDeviceIndex}" : string.Empty;
+        string d3dDevFlag = gpuDeviceIndex >= 0 ? $" -hwaccel_device {gpuDeviceIndex}" : string.Empty;
+        string cuvidGpuFlag = gpuDeviceIndex >= 0 ? $" -gpu {gpuDeviceIndex}" : string.Empty;
         string decoderPart = mode switch
         {
             DecoderMode.Nvdec => c == "hevc"
-                ? $"-hwaccel cuda{devFlag} -c:v hevc_cuvid"
-                : $"-hwaccel cuda{devFlag} -c:v h264_cuvid",
-            DecoderMode.D3d11va => $"-hwaccel d3d11va{devFlag} -c:v {c}",
-            _ => $"-c:v {c}",
+                ? $"-c:v hevc_cuvid{cuvidGpuFlag}"
+                : $"-c:v h264_cuvid{cuvidGpuFlag}",
+            DecoderMode.D3d11va => $"-hwaccel d3d11va{d3dDevFlag} -c:v {c}",
+            _ => $"-threads 4 -c:v {c}",
         };
 
         // Raw Annex-B streams lack container timestamps and default to 25 fps CFR in FFmpeg (dropping frames >25 fps).
-        // Pass -framerate on input and -fps_mode passthrough on output so every decoded frame emits immediately.
+        // Pass -framerate on input, -fps_mode passthrough on output, and emit raw NV12 so C# performs parallel NV12->BGRA+rotation without FFmpeg swscale bottleneck.
         return $"-hide_banner -loglevel info -flags low_delay -fpsprobesize 0 -probesize 4096 -analyzeduration 0 " +
-               $"{decoderPart} -framerate {safeFps} -f {c} -i pipe:0 -flush_packets 1 -fps_mode passthrough -f rawvideo -pix_fmt bgra pipe:1";
+               $"{decoderPart} -framerate {safeFps} -f {c} -i pipe:0 -flush_packets 1 -fps_mode passthrough -f rawvideo -pix_fmt nv12 pipe:1";
     }
 
     public static FfmpegDecoderSession Start(
@@ -193,7 +208,8 @@ public sealed partial class FfmpegDecoderSession : IDisposable
                 await Task.WhenAny(_sizeReadyTcs.Task, Task.Delay(50, ct)).ConfigureAwait(false);
             }
 
-            byte[] frameBuf = new byte[_width * _height * 4];
+            int initialBytes = (_width * _height * 3) / 2;
+            byte[] frameBuf = new byte[initialBytes];
             frameBuf[0] = firstByte[0];
             int initialOffset = 1;
 
@@ -201,7 +217,7 @@ public sealed partial class FfmpegDecoderSession : IDisposable
             {
                 int w = _width;
                 int h = _height;
-                int frameBytes = w * h * 4;
+                int frameBytes = (w * h * 3) / 2;
                 if (frameBuf.Length != frameBytes)
                 {
                     var resized = new byte[frameBytes];
@@ -221,7 +237,24 @@ public sealed partial class FfmpegDecoderSession : IDisposable
                     readTotal += n;
                 }
 
-                _onFrame(frameBuf, w, h);
+                // Publish completed frame to triple-buffer ready slot and immediately grab a recycled buffer
+                // so FFmpeg stdout pipe draining never stalls behind C# color conversion or SHM writes.
+                byte[]? recycled;
+                lock (_frameSlotLock)
+                {
+                    recycled = _readyBuf;
+                    _readyBuf = frameBuf;
+                    _readyW = w;
+                    _readyH = h;
+                    if (recycled == null)
+                    {
+                        recycled = _spareBuf;
+                        _spareBuf = null;
+                    }
+                }
+                _frameReadySignal.Set();
+
+                frameBuf = (recycled != null && recycled.Length == frameBytes) ? recycled : new byte[frameBytes];
             }
         }
         catch (OperationCanceledException)
@@ -233,6 +266,53 @@ public sealed partial class FfmpegDecoderSession : IDisposable
         catch (Exception ex)
         {
             _onLog($"[FFmpeg stdout error] {ex.Message}");
+        }
+    }
+
+    private void ConsumeFramesLoop(CancellationToken ct)
+    {
+        WaitHandle[] handles = [_frameReadySignal, ct.WaitHandle];
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                int signaled = WaitHandle.WaitAny(handles);
+                if (signaled != 0 || ct.IsCancellationRequested) break;
+
+                while (!ct.IsCancellationRequested)
+                {
+                    byte[]? buf;
+                    int w;
+                    int h;
+                    lock (_frameSlotLock)
+                    {
+                        buf = _readyBuf;
+                        _readyBuf = null;
+                        w = _readyW;
+                        h = _readyH;
+                    }
+                    if (buf == null) break;
+
+                    try
+                    {
+                        _onFrame(buf, w, h);
+                    }
+                    finally
+                    {
+                        lock (_frameSlotLock)
+                        {
+                            _spareBuf = buf;
+                        }
+                    }
+                }
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (Exception ex)
+        {
+            _onLog($"[FFmpeg consumer error] {ex.Message}");
         }
     }
 
@@ -257,8 +337,9 @@ public sealed partial class FfmpegDecoderSession : IDisposable
         }
         catch { }
 
-        try { Task.WaitAll([_stderrTask, _stdoutTask], 500); } catch { }
+        try { Task.WaitAll([_stderrTask, _stdoutTask, _consumerTask], 500); } catch { }
         _cts.Dispose();
+        _frameReadySignal.Dispose();
         _process.Dispose();
     }
 }

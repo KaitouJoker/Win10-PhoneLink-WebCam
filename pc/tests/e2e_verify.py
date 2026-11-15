@@ -184,32 +184,43 @@ def check_portable_folder() -> None:
     print("  OK: PE headers verified (vcam-dshow.dll=0x8664 x64, vcam-dshow32.dll=0x014C x86)")
 
 
-def check_dshow_registration() -> None:
-    print("[2/8] Registering vcam-dshow.dll and verifying DirectShow enumeration...")
-    reg_res = subprocess.run(["cmd.exe", "/c", str(REG_BAT), "--no-elevate"], capture_output=True, text=True, check=False)
-    assert reg_res.returncode == 0, f"register_camera.bat failed ({reg_res.returncode}): {reg_res.stderr}"
-
-    reg_path = None
-    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+def _find_active_vcam_hive() -> tuple[int, str, str] | None:
+    clsid_subkey = rf"Software\Classes\CLSID\{VCAM_CLSID}\InprocServer32"
+    cat_subkey = rf"Software\Classes\CLSID\{{860BB310-5D01-11d0-BD3B-00A0C911CE86}}\Instance\{VCAM_CLSID}"
+    for hive, name in ((winreg.HKEY_LOCAL_MACHINE, "HKLM"), (winreg.HKEY_CURRENT_USER, "HKCU")):
         try:
-            with winreg.OpenKey(hive, rf"Software\Classes\CLSID\{VCAM_CLSID}\InprocServer32") as k:
+            with winreg.OpenKey(hive, clsid_subkey) as k:
                 val, _ = winreg.QueryValueEx(k, None)
-                if val:
-                    reg_path = val
-                    break
+            with winreg.OpenKey(hive, cat_subkey):
+                pass
+            if val:
+                return hive, name, val
         except OSError:
             continue
-    assert reg_path is not None, f"CLSID {VCAM_CLSID} not found in HKCU/HKLM registry"
+    return None
+
+
+def check_dshow_registration() -> None:
+    print("[2/8] Verifying vcam-dshow.dll registration and DirectShow enumeration...")
+    active = _find_active_vcam_hive()
+    if active is None or Path(active[2]).resolve() != VCAM_DLL.resolve():
+        reg_res = subprocess.run(["cmd.exe", "/c", str(REG_BAT), "--no-elevate"], capture_output=True, text=True, check=False)
+        assert reg_res.returncode == 0, f"register_camera.bat failed ({reg_res.returncode}): {reg_res.stderr}"
+        active = _find_active_vcam_hive()
+    assert active is not None, f"CLSID {VCAM_CLSID} not found in HKLM/HKCU registry"
+    hive, hive_name, reg_path = active
     assert Path(reg_path).resolve() == VCAM_DLL.resolve(), f"Registry points to {reg_path}, expected {VCAM_DLL}"
-    print(f"  OK: Registry InprocServer32 -> {reg_path}")
+    print(f"  OK: {hive_name} InprocServer32 -> {reg_path}")
 
     cat_subkey = rf"Software\Classes\CLSID\{{860BB310-5D01-11d0-BD3B-00A0C911CE86}}\Instance\{VCAM_CLSID}"
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, cat_subkey) as ck:
+    with winreg.OpenKey(hive, cat_subkey) as ck:
         friendly_val, _ = winreg.QueryValueEx(ck, "FriendlyName")
         desc_val, _ = winreg.QueryValueEx(ck, "Description")
-    assert friendly_val == VCAM_NAME, f"HKCU FriendlyName mismatch: {friendly_val!r}"
-    assert desc_val == VCAM_NAME, f"HKCU Description mismatch: {desc_val!r}"
-    print(f'  OK: HKCU category instance FriendlyName & Description == "{VCAM_NAME}"')
+        filter_data, _ = winreg.QueryValueEx(ck, "FilterData")
+    assert friendly_val == VCAM_NAME, f"{hive_name} FriendlyName mismatch: {friendly_val!r}"
+    assert desc_val == VCAM_NAME, f"{hive_name} Description mismatch: {desc_val!r}"
+    assert len(filter_data) >= 88, f"{hive_name} FilterData unexpectedly short ({len(filter_data)}B)"
+    print(f'  OK: {hive_name} category instance FriendlyName & Description == "{VCAM_NAME}" (FilterData={len(filter_data)}B)')
 
     enum_res = subprocess.run(
         [str(SYSTEM_FFMPEG), "-hide_banner", "-f", "dshow", "-list_devices", "true", "-i", "dummy"],
@@ -659,7 +670,7 @@ def verify_60fps_1080p_rotated(codec: str, port: int, token: str) -> None:
     )
     pre_cmd = [
         str(SYSTEM_FFMPEG), "-hide_banner", "-loglevel", "error",
-        "-f", "lavfi", "-i", "color=c=#1840A0:s=1920x1080:r=60:d=0.5",
+        "-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=60:d=0.5",
         *enc_args, "-pix_fmt", "yuv420p", "-f", codec, "pipe:1",
     ]
     pre_res = subprocess.run(pre_cmd, capture_output=True, timeout=30, check=False)
