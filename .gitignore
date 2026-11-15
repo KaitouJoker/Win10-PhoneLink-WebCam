@@ -12,3 +12,4 @@ pc/tests/__pycache__/
 **/ffmpeg.exe
 dist/Portable-Win10-PhoneLink-WebCam/settings.json
 Release/
+dist/*.zip

@@ -22,6 +22,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.view.MotionEvent
 import android.view.Surface
 import android.view.TextureView
 import android.view.View
@@ -82,6 +83,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     }
 
     private var suppressSpinnerEvents: Boolean = true
+    private var languageSpinnerTouched: Boolean = false
     private var latestState: StreamConnectionState = StreamConnectionState.IDLE
 
     override fun attachBaseContext(newBase: Context) {
@@ -240,6 +242,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        LocaleHelper.wrapContext(this)
         configurePreviewTransform()
     }
 
@@ -398,15 +401,25 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
             LabeledOption(LocaleHelper.LANG_EN, getString(R.string.lang_english))
         )
         val activeLang = LocaleHelper.getLanguage(this)
+        languageSpinnerTouched = false
         binding.spinnerLanguage.adapter = makeSpinnerAdapter(langValues)
         binding.spinnerLanguage.setSelection(
             langValues.indexOfFirst { it.value == activeLang }.coerceAtLeast(0),
             false
         )
+        binding.spinnerLanguage.setOnTouchListener { _, event ->
+            if (event.action == MotionEvent.ACTION_DOWN || event.action == MotionEvent.ACTION_UP) {
+                languageSpinnerTouched = true
+            }
+            false
+        }
 
         attachSpinnerListeners(codecValues, resValues, fpsValues, bitrateValues, rotValues, langValues.map { it.value })
 
-        binding.root.post { suppressSpinnerEvents = false }
+        binding.root.post {
+            languageSpinnerTouched = false
+            suppressSpinnerEvents = false
+        }
     }
 
     private fun refilterEncoderSpinner(preferredCodecName: String? = null) {
@@ -579,7 +592,8 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
 
         binding.spinnerLanguage.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
-                if (suppressSpinnerEvents || pos !in langValues.indices) return
+                if (suppressSpinnerEvents || !languageSpinnerTouched || pos !in langValues.indices) return
+                languageSpinnerTouched = false
                 val nextLang = langValues[pos]
                 if (nextLang != LocaleHelper.getLanguage(this@MainActivity)) {
                     switchAppLanguage(nextLang)
@@ -591,8 +605,11 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     }
 
     private fun switchAppLanguage(langCode: String) {
-        LocaleHelper.setLanguage(this, langCode)
         suppressSpinnerEvents = true
+        languageSpinnerTouched = false
+        val normalized = LocaleHelper.setLanguage(this, langCode)
+        binding.spinnerLanguage.setSelection(if (normalized == LocaleHelper.LANG_KO) 0 else 1, false)
+        LocaleHelper.applyLocale(this)
         recreate()
     }
 
