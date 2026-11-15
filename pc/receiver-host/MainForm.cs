@@ -529,7 +529,7 @@ public sealed class MainForm : Form
         };
         var flipHint = new Label
         {
-            Text = "대기 화면과 송출 영상의 좌/우·상/하 반전을 즉시 전환합니다. (Discord 기본 미리보기에 맞춰 대기 화면은 기본 정방향 보정 적용됨)",
+            Text = "대기 화면(기본값 RAW 정방향)과 송출 영상의 좌/우·상/하 반전을 즉시 전환합니다. (Discord 자체 좌우반전이 보이는 경우 좌/우 반전을 켜세요)",
             Location = new Point(16, 62),
             Width = 665,
             Height = 32,

@@ -693,9 +693,7 @@ bool FrameConverter::RenderStandby(
 
     const bool userFlipH = (flipFlags & phonelink_cam::FlipFlags::kHorizontal) != 0;
     const bool userFlipV = (flipFlags & phonelink_cam::FlipFlags::kVertical) != 0;
-    // Video call apps (Discord/Zoom/Teams/Meet) horizontally mirror local camera previews by default,
-    // so standby text is pre-mirrored horizontally when userFlipH is false.
-    FlipBgraBufferInPlace(buf, w, h, !userFlipH, userFlipV);
+    FlipBgraBufferInPlace(buf, w, h, userFlipH, userFlipV);
 
     return ConvertBgraToTarget(buf, w * 4u, dst, dstBuf, dstBufBytes);
 }
