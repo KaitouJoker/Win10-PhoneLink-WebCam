@@ -89,6 +89,7 @@ class ShmHeaderSnapshot:
     stride: int
     timestamp_100ns: int
     payload_size: int
+    flip_flags: int = 0
 
 
 def read_shm_header() -> ShmHeaderSnapshot:
@@ -116,6 +117,7 @@ def read_shm_header() -> ShmHeaderSnapshot:
                 stride=fields[8],
                 timestamp_100ns=fields[9],
                 payload_size=fields[10],
+                flip_flags=fields[11][0],
             )
         finally:
             kernel32.UnmapViewOfFile(ptr)
@@ -377,6 +379,10 @@ def stream_live_ffmpeg_to_plwc(
     duration_s: int,
     capture_pattern: str,
     standby_png: Path,
+    extra_receiver_args: list[str] | None = None,
+    expected_tl_hex: str | None = None,
+    expected_br_hex: str | None = None,
+    expected_flip_flags: int = 0x80,
 ) -> tuple[list[Path], str]:
     assert codec in ("h264", "hevc")
     expected_cuvid = "h264_cuvid" if codec == "h264" else "hevc_cuvid"
@@ -389,6 +395,7 @@ def stream_live_ffmpeg_to_plwc(
         "--token", token,
         "--decoder", "nvdec",
         "--duration", str(duration_s),
+        *(extra_receiver_args or []),
     ]
     receiver_proc = subprocess.Popen(
         receiver_cmd,
@@ -548,6 +555,9 @@ def stream_live_ffmpeg_to_plwc(
         assert shm1.pixel_format == 2, f"Expected BGRA32 (2), got {shm1.pixel_format}"
         assert shm1.stride == 1280 * 4
         assert shm1.payload_size == 1280 * 720 * 4
+        assert shm1.flip_flags == expected_flip_flags, (
+            f"[{codec}] Unexpected flip_flags: got 0x{shm1.flip_flags:02X}, expected 0x{expected_flip_flags:02X}"
+        )
 
         time.sleep(0.6)
         shm2 = read_shm_header()
@@ -614,8 +624,8 @@ def stream_live_ffmpeg_to_plwc(
             return np.array([int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)], dtype=float)
 
         for label, actual, expected_hex in [
-            ("top-left marker", tl_rgb, tl_hex),
-            ("bottom-right marker", br_rgb, br_hex),
+            ("top-left marker", tl_rgb, expected_tl_hex or tl_hex),
+            ("bottom-right marker", br_rgb, expected_br_hex or br_hex),
             ("background", bg_rgb, bg_hex),
         ]:
             exp = hex_to_rgb(expected_hex)
@@ -895,9 +905,27 @@ def main() -> int:
         standby_png=standby_png,
     )
 
-    print("[7/8] Running 60fps 1080p rotated (270deg) stream verification (h264 & hevc NVDEC)...")
+    print("[7/9] Running 60fps 1080p rotated (270deg) stream verification (h264 & hevc NVDEC)...")
     verify_60fps_1080p_rotated("h264", TEST_PORT, TEST_TOKEN)
     verify_60fps_1080p_rotated("hevc", TEST_PORT, TEST_TOKEN)
+
+    print("[8/9] Running E2E horizontal + vertical flip verification (--flip-h --flip-v)...")
+    stream_live_ffmpeg_to_plwc(
+        codec="h264",
+        bg_hex="#108820",
+        tl_hex="#FFFF00",
+        br_hex="#00FFFF",
+        box_hex="#FF2020",
+        port=TEST_PORT,
+        token=TEST_TOKEN,
+        duration_s=10,
+        capture_pattern="captured_flip_frame_%d.png",
+        standby_png=standby_png,
+        extra_receiver_args=["--flip-h", "--flip-v"],
+        expected_tl_hex="#00FFFF",
+        expected_br_hex="#FFFF00",
+        expected_flip_flags=0x83,
+    )
 
     check_android_completeness()
     elapsed = time.monotonic() - start_ts

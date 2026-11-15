@@ -191,6 +191,32 @@ void DrawTextCenteredBgra(
     }
 }
 
+void FlipBgraBufferInPlace(uint8_t* buf, uint32_t w, uint32_t h, bool flipH, bool flipV) noexcept {
+    if ((!flipH && !flipV) || buf == nullptr || w == 0 || h == 0) {
+        return;
+    }
+    auto* pixels = reinterpret_cast<uint32_t*>(buf);
+    if (flipV && flipH) {
+        const size_t total = static_cast<size_t>(w) * h;
+        for (size_t i = 0; i < total / 2u; ++i) {
+            std::swap(pixels[i], pixels[total - 1u - i]);
+        }
+        return;
+    }
+    if (flipV) {
+        for (uint32_t y = 0; y < h / 2u; ++y) {
+            uint32_t* top = pixels + static_cast<size_t>(y) * w;
+            uint32_t* bot = pixels + static_cast<size_t>(h - 1u - y) * w;
+            std::swap_ranges(top, top + w, bot);
+        }
+        return;
+    }
+    for (uint32_t y = 0; y < h; ++y) {
+        uint32_t* row = pixels + static_cast<size_t>(y) * w;
+        std::reverse(row, row + w);
+    }
+}
+
 } // namespace
 
 size_t FrameConverter::RequiredBufferSize(const TargetFormatDesc& dst) noexcept {
@@ -543,7 +569,10 @@ bool FrameConverter::ConvertLiveFrame(
         return false;
     }
 
-    if (src.width == dst.width && src.height == dst.height) {
+    const uint8_t flipMask = src.flipFlags & (phonelink_cam::FlipFlags::kHorizontal | phonelink_cam::FlipFlags::kVertical);
+    const bool needsFlip = (flipMask != 0) && ((src.flipFlags & phonelink_cam::FlipFlags::kPreApplied) == 0);
+
+    if (!needsFlip && src.width == dst.width && src.height == dst.height) {
         if (src.format == phonelink_cam::PixelFormat::BGRA32) {
             return ConvertBgraToTarget(src.data, src.stride, dst, dstBuf, dstBufBytes);
         }
@@ -557,6 +586,14 @@ bool FrameConverter::ConvertLiveFrame(
     }
 
     ScaleAndCenterToScratchBgra(src, dst.width, dst.height);
+    if (needsFlip) {
+        FlipBgraBufferInPlace(
+            m_scratchBgra.data(),
+            dst.width,
+            dst.height,
+            (flipMask & phonelink_cam::FlipFlags::kHorizontal) != 0,
+            (flipMask & phonelink_cam::FlipFlags::kVertical) != 0);
+    }
     return ConvertBgraToTarget(m_scratchBgra.data(), dst.width * 4u, dst, dstBuf, dstBufBytes);
 }
 
@@ -564,6 +601,7 @@ bool FrameConverter::RenderStandby(
     const TargetFormatDesc& dst,
     uint64_t frameIndex,
     bool isPaused,
+    uint8_t flipFlags,
     uint8_t* dstBuf,
     size_t dstBufBytes) {
     EnsureScratch(dst.width, dst.height);
@@ -652,6 +690,12 @@ bool FrameConverter::RenderStandby(
         200,
         190,
         180);
+
+    const bool userFlipH = (flipFlags & phonelink_cam::FlipFlags::kHorizontal) != 0;
+    const bool userFlipV = (flipFlags & phonelink_cam::FlipFlags::kVertical) != 0;
+    // Video call apps (Discord/Zoom/Teams/Meet) horizontally mirror local camera previews by default,
+    // so standby text is pre-mirrored horizontally when userFlipH is false.
+    FlipBgraBufferInPlace(buf, w, h, !userFlipH, userFlipV);
 
     return ConvertBgraToTarget(buf, w * 4u, dst, dstBuf, dstBufBytes);
 }

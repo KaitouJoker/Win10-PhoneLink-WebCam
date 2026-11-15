@@ -28,13 +28,16 @@ public static unsafe class FrameTransformer
         int rotationQuarterTurns,
         int targetWidth,
         int targetHeight,
+        bool flipHorizontal,
+        bool flipVertical,
         out bool isIdentity)
     {
         int rot = ((rotationQuarterTurns % 4) + 4) % 4;
         bool hasExplicitTarget = targetWidth > 0 && targetHeight > 0;
         bool fitsDirectly = srcW <= ShmWriter.MaxWidth && srcH <= ShmWriter.MaxHeight;
 
-        isIdentity = rot == 0 && fitsDirectly && (!hasExplicitTarget || (srcW == targetWidth && srcH == targetHeight));
+        isIdentity = rot == 0 && !flipHorizontal && !flipVertical && fitsDirectly &&
+                     (!hasExplicitTarget || (srcW == targetWidth && srcH == targetHeight));
         int outW;
         int outH;
         if (isIdentity)
@@ -108,14 +111,16 @@ public static unsafe class FrameTransformer
         out int outW,
         out int outH,
         int targetWidth = 0,
-        int targetHeight = 0)
+        int targetHeight = 0,
+        bool flipHorizontal = false,
+        bool flipVertical = false)
     {
         if (srcW <= 0 || srcH <= 0 || srcNv12.Length < (srcW * srcH * 3) / 2)
         {
             throw new ArgumentException($"Invalid NV12 frame size {srcW}x{srcH} (len={srcNv12.Length}).");
         }
 
-        TransformLayout layout = ComputeLayout(srcW, srcH, rotationQuarterTurns, targetWidth, targetHeight, out _);
+        TransformLayout layout = ComputeLayout(srcW, srcH, rotationQuarterTurns, targetWidth, targetHeight, flipHorizontal, flipVertical, out _);
         outW = layout.OutW;
         outH = layout.OutH;
         EnsureScratchAndClearBorders(ref scratch, layout, out int outBytes);
@@ -134,14 +139,14 @@ public static unsafe class FrameTransformer
             {
                 Parallel.For(0, layout.DrawH, dy =>
                 {
-                    TransformNv12Row((byte*)sAddr, (uint*)dAddr, srcW, srcH, ySize, maxUvRow, maxUvCol, layout, dy);
+                    TransformNv12Row((byte*)sAddr, (uint*)dAddr, srcW, srcH, ySize, maxUvRow, maxUvCol, layout, dy, flipHorizontal, flipVertical);
                 });
             }
             else
             {
                 for (int dy = 0; dy < layout.DrawH; dy++)
                 {
-                    TransformNv12Row(sPtr, (uint*)dBase, srcW, srcH, ySize, maxUvRow, maxUvCol, layout, dy);
+                    TransformNv12Row(sPtr, (uint*)dBase, srcW, srcH, ySize, maxUvRow, maxUvCol, layout, dy, flipHorizontal, flipVertical);
                 }
             }
         }
@@ -159,7 +164,9 @@ public static unsafe class FrameTransformer
         int maxUvRow,
         int maxUvCol,
         in TransformLayout layout,
-        int dy)
+        int dy,
+        bool flipHorizontal,
+        bool flipVertical)
     {
         uint* rowStart = d + (layout.OffY + dy) * layout.OutW;
         if (layout.OffX > 0)
@@ -172,7 +179,8 @@ public static unsafe class FrameTransformer
             new Span<uint>(rowStart + rightX, layout.OutW - rightX).Clear();
         }
 
-        int oy = (int)((long)dy * layout.OrientedH / layout.DrawH);
+        int effDy = flipVertical ? (layout.DrawH - 1 - dy) : dy;
+        int oy = (int)((long)effDy * layout.OrientedH / layout.DrawH);
         uint* dstRow = rowStart + layout.OffX;
         byte* uvPlane = s + ySize;
 
@@ -194,6 +202,10 @@ public static unsafe class FrameTransformer
             {
                 int uvOff = Math.Min(dx & ~1, maxUvCol);
                 dstRow[dx] = YuvToBgra32(yRow[dx], uvRowPtr[uvOff] - 128, uvRowPtr[uvOff + 1] - 128);
+            }
+            if (flipHorizontal && layout.DrawW > 1)
+            {
+                new Span<uint>(dstRow, layout.DrawW).Reverse();
             }
             return;
         }
@@ -246,6 +258,11 @@ public static unsafe class FrameTransformer
                 dstRow[dx] = YuvToBgra32(yRow[sx], uvRowPtr[uvOff] - 128, uvRowPtr[uvOff + 1] - 128);
             }
         }
+
+        if (flipHorizontal && layout.DrawW > 1)
+        {
+            new Span<uint>(dstRow, layout.DrawW).Reverse();
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -276,9 +293,11 @@ public static unsafe class FrameTransformer
         out int outW,
         out int outH,
         int targetWidth = 0,
-        int targetHeight = 0)
+        int targetHeight = 0,
+        bool flipHorizontal = false,
+        bool flipVertical = false)
     {
-        TransformLayout layout = ComputeLayout(srcW, srcH, rotationQuarterTurns, targetWidth, targetHeight, out bool isIdentity);
+        TransformLayout layout = ComputeLayout(srcW, srcH, rotationQuarterTurns, targetWidth, targetHeight, flipHorizontal, flipVertical, out bool isIdentity);
         outW = layout.OutW;
         outH = layout.OutH;
         if (isIdentity)
@@ -294,7 +313,7 @@ public static unsafe class FrameTransformer
             uint* s = (uint*)sBase;
             uint* d = (uint*)dBase;
 
-            if (layout.Rot == 2 && srcW == outW && srcH == outH)
+            if (!flipHorizontal && !flipVertical && layout.Rot == 2 && srcW == outW && srcH == outH)
             {
                 int total = srcW * srcH;
                 for (int i = 0; i < total; i++)
@@ -312,14 +331,14 @@ public static unsafe class FrameTransformer
             {
                 Parallel.For(0, layout.DrawH, dy =>
                 {
-                    TransformRow((uint*)sAddr, (uint*)dAddr, srcW, srcH, layout.OutW, layout.Rot, layout.OrientedW, layout.OrientedH, layout.DrawW, layout.DrawH, layout.OffX, layout.OffY, rightX, dy);
+                    TransformRow((uint*)sAddr, (uint*)dAddr, srcW, srcH, layout.OutW, layout.Rot, layout.OrientedW, layout.OrientedH, layout.DrawW, layout.DrawH, layout.OffX, layout.OffY, rightX, dy, flipHorizontal, flipVertical);
                 });
             }
             else
             {
                 for (int dy = 0; dy < layout.DrawH; dy++)
                 {
-                    TransformRow(s, d, srcW, srcH, layout.OutW, layout.Rot, layout.OrientedW, layout.OrientedH, layout.DrawW, layout.DrawH, layout.OffX, layout.OffY, rightX, dy);
+                    TransformRow(s, d, srcW, srcH, layout.OutW, layout.Rot, layout.OrientedW, layout.OrientedH, layout.DrawW, layout.DrawH, layout.OffX, layout.OffY, rightX, dy, flipHorizontal, flipVertical);
                 }
             }
         }
@@ -342,7 +361,9 @@ public static unsafe class FrameTransformer
         int offX,
         int offY,
         int rightX,
-        int dy)
+        int dy,
+        bool flipHorizontal,
+        bool flipVertical)
     {
         uint* rowStart = d + (offY + dy) * outW;
         if (offX > 0)
@@ -354,7 +375,8 @@ public static unsafe class FrameTransformer
             new Span<uint>(rowStart + rightX, outW - rightX).Clear();
         }
 
-        int oy = (int)((long)dy * orientedH / drawH);
+        int effDy = flipVertical ? (drawH - 1 - dy) : dy;
+        int oy = (int)((long)effDy * orientedH / drawH);
         uint* dstRow = rowStart + offX;
 
         if (rot == 3)
@@ -394,6 +416,11 @@ public static unsafe class FrameTransformer
                 int ox = (int)((long)dx * orientedW / drawW);
                 dstRow[dx] = srcRow[ox];
             }
+        }
+
+        if (flipHorizontal && drawW > 1)
+        {
+            new Span<uint>(dstRow, drawW).Reverse();
         }
     }
 

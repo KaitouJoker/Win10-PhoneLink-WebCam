@@ -65,6 +65,8 @@ public sealed class ReceiverSettings
     public DecoderMode Decoder { get; set; } = DecoderMode.Nvdec;
     public int GpuDeviceIndex { get; set; } = 0;
     public bool PreviewEnabled { get; set; } = true;
+    public bool FlipHorizontal { get; set; } = false;
+    public bool FlipVertical { get; set; } = false;
 
     private static string SettingsFilePath => Path.Combine(AppContext.BaseDirectory, "settings.json");
 
@@ -138,6 +140,12 @@ public sealed class ControlMessage
 
     [JsonPropertyName("paused")]
     public bool? Paused { get; set; }
+
+    [JsonPropertyName("flip_h")]
+    public bool? FlipHorizontal { get; set; }
+
+    [JsonPropertyName("flip_v")]
+    public bool? FlipVertical { get; set; }
 }
 
 public sealed class QrPairingPayload

@@ -51,10 +51,15 @@ if errorlevel 1 (
     endlocal
     exit /b 1
 )
-copy /Y "%BUILD_DIR%\%OUT_NAME%.dll" "%DIST_DIR%\%OUT_NAME%.dll" >nul
+del /F /Q "%BUILD_DIR%\%OUT_NAME%.old.dll" >nul 2>&1
+copy /Y "%BUILD_DIR%\%OUT_NAME%.dll" "%DIST_DIR%\%OUT_NAME%.dll" >nul 2>&1
 if errorlevel 1 (
-    endlocal
-    exit /b 1
+    move /Y "%DIST_DIR%\%OUT_NAME%.dll" "%BUILD_DIR%\%OUT_NAME%.old.dll" >nul 2>&1
+    copy /Y "%BUILD_DIR%\%OUT_NAME%.dll" "%DIST_DIR%\%OUT_NAME%.dll" >nul
+    if errorlevel 1 (
+        endlocal
+        exit /b 1
+    )
 )
 echo [OK] Built %OUT_NAME%.dll (%ARCH%)
 endlocal

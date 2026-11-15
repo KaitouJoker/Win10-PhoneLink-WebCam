@@ -25,6 +25,7 @@ inline void ReadHeaderVolatile(const uint8_t* base, phonelink_cam::ShmHeader& ou
     out.stride = VolatileLoad(&v->stride);
     out.timestamp_100ns = VolatileLoad(&v->timestamp_100ns);
     out.payload_size = VolatileLoad(&v->payload_size);
+    out.reserved[0] = VolatileLoad(&v->reserved[0]);
 }
 
 } // namespace
@@ -46,6 +47,31 @@ void ShmReader::Close() {
     m_sawEvent = false;
     m_lastSeq = 0;
     m_staleTicks = 0;
+    m_disconnectedTicks = 0;
+    m_regCacheTicks = 0;
+}
+
+uint8_t ShmReader::ReadRegistryFlipFlags() {
+    if (m_regCacheTicks == 0) {
+        DWORD val = 0;
+        DWORD cb = sizeof(val);
+        if (RegGetValueW(
+                HKEY_CURRENT_USER,
+                L"Software\\Win10PhoneLinkWebCam",
+                L"FlipFlags",
+                RRF_RT_REG_DWORD,
+                nullptr,
+                &val,
+                &cb) == ERROR_SUCCESS) {
+            m_cachedRegFlipFlags = static_cast<uint8_t>(val & 0x03u);
+        } else {
+            m_cachedRegFlipFlags = 0;
+        }
+        m_regCacheTicks = 30;
+    } else {
+        --m_regCacheTicks;
+    }
+    return m_cachedRegFlipFlags;
 }
 
 bool ShmReader::EnsureOpen() {
@@ -152,6 +178,7 @@ ShmReadStatus ShmReader::ReadLatest(ShmFrameSnapshot& outSnapshot) {
     outSnapshot = {};
 
     if (!EnsureOpen()) {
+        outSnapshot.flipFlags = ReadRegistryFlipFlags();
         return ShmReadStatus::Disconnected;
     }
 
@@ -175,15 +202,28 @@ ShmReadStatus ShmReader::ReadLatest(ShmFrameSnapshot& outSnapshot) {
         if (hdr.magic != phonelink_cam::kShmMagic || hdr.version != phonelink_cam::kShmVersion) {
             Close();
             m_reopenCooldown = 3;
+            outSnapshot.flipFlags = ReadRegistryFlipFlags();
             return ShmReadStatus::Disconnected;
         }
 
+        outSnapshot.flipFlags = hdr.reserved[0];
         const auto state = static_cast<phonelink_cam::FrameState>(hdr.frame_state);
         if (state == phonelink_cam::FrameState::Disconnected) {
-            Close();
-            m_reopenCooldown = 3;
+            ++m_disconnectedTicks;
+            if (m_disconnectedTicks >= 15) {
+                m_disconnectedTicks = 0;
+                HANDLE hEvent = OpenEventW(SYNCHRONIZE, FALSE, phonelink_cam::kShmEventName);
+                if (hEvent == nullptr) {
+                    Close();
+                    m_reopenCooldown = 3;
+                    outSnapshot.flipFlags = ReadRegistryFlipFlags();
+                    return ShmReadStatus::Disconnected;
+                }
+                CloseHandle(hEvent);
+            }
             return ShmReadStatus::Disconnected;
         }
+        m_disconnectedTicks = 0;
         if (state == phonelink_cam::FrameState::Paused) {
             outSnapshot.status = ShmReadStatus::Paused;
             return ShmReadStatus::Paused;

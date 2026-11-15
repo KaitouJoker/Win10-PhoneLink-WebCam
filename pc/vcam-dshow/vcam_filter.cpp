@@ -1056,6 +1056,7 @@ void CVcamOutputPin::StreamThreadProc() {
                     desc,
                     frameIndex,
                     shmStatus == ShmReadStatus::Paused,
+                    snap.flipFlags,
                     pBuf,
                     static_cast<size_t>(bufSize));
             }

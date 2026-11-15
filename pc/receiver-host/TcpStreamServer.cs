@@ -69,6 +69,8 @@ public sealed class TcpStreamServer : IDisposable
     private volatile CodecPreference _codecPreference;
     private volatile int _targetWidth;
     private volatile int _targetHeight;
+    private volatile bool _flipHorizontal;
+    private volatile bool _flipVertical;
     private bool _disposed;
 
     public event FramePreviewHandler? FrameAvailable;
@@ -83,7 +85,9 @@ public sealed class TcpStreamServer : IDisposable
         string? gpuDeviceName = null,
         CodecPreference codecPreference = CodecPreference.Auto,
         int targetWidth = 0,
-        int targetHeight = 0)
+        int targetHeight = 0,
+        bool flipHorizontal = false,
+        bool flipVertical = false)
     {
         _shm = shm;
         _port = port;
@@ -94,7 +98,10 @@ public sealed class TcpStreamServer : IDisposable
         _codecPreference = codecPreference;
         _targetWidth = targetWidth;
         _targetHeight = targetHeight;
+        _flipHorizontal = flipHorizontal;
+        _flipVertical = flipVertical;
         _log = log;
+        _shm.SetFlipFlags(flipHorizontal, flipVertical, preApplied: true, persistToRegistry: false);
     }
 
     public int Port => _port;
@@ -104,6 +111,8 @@ public sealed class TcpStreamServer : IDisposable
     public CodecPreference CodecPreference => _codecPreference;
     public int TargetWidth => _targetWidth;
     public int TargetHeight => _targetHeight;
+    public bool FlipHorizontal => _flipHorizontal;
+    public bool FlipVertical => _flipVertical;
 
     public void Start()
     {
@@ -180,6 +189,14 @@ public sealed class TcpStreamServer : IDisposable
         _log(targetWidth > 0 && targetHeight > 0
             ? $"[Server] Target output resolution set to {targetWidth}x{targetHeight}"
             : "[Server] Target output resolution set to Auto (source native)");
+    }
+
+    public void SetFlip(bool flipHorizontal, bool flipVertical, bool persistToRegistry = true)
+    {
+        _flipHorizontal = flipHorizontal;
+        _flipVertical = flipVertical;
+        _shm.SetFlipFlags(flipHorizontal, flipVertical, preApplied: true, persistToRegistry: persistToRegistry);
+        _log($"[Server] Virtual camera flip updated: FlipH={flipHorizontal}, FlipV={flipVertical}");
     }
 
     public void SetManualPaused(bool paused)
@@ -502,6 +519,10 @@ public sealed class TcpStreamServer : IDisposable
                         _shm.SetState(FrameState.Paused);
                     }
                 }
+                if (ctrl.FlipHorizontal.HasValue || ctrl.FlipVertical.HasValue)
+                {
+                    SetFlip(ctrl.FlipHorizontal ?? _flipHorizontal, ctrl.FlipVertical ?? _flipVertical);
+                }
             }
             _log($"[Control] camera={_camera}, rotation={_rotationQuarterTurns * 90}deg, paused={_remotePaused}");
         }
@@ -553,7 +574,9 @@ public sealed class TcpStreamServer : IDisposable
             out int outW,
             out int outH,
             _targetWidth,
-            _targetHeight);
+            _targetHeight,
+            _flipHorizontal,
+            _flipVertical);
 
         _shm.WriteBgra32Frame(normalized, outW, outH, FrameState.Live);
         FrameAvailable?.Invoke(normalized, outW, outH);

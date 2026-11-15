@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
+using Microsoft.Win32;
 
 namespace PhoneCamReceiver;
 
@@ -36,6 +37,12 @@ public sealed unsafe class ShmWriter : IDisposable
     public const int HeaderSize = 64;
     public const int SlotSize = MaxWidth * MaxHeight * 4; // 8,294,400 bytes
     public const long TotalSize = HeaderSize + (long)SlotCount * SlotSize; // 24,883,264 bytes
+    public const byte FlipNone = 0x00;
+    public const byte FlipHorizontal = 0x01;
+    public const byte FlipVertical = 0x02;
+    public const byte FlipPreApplied = 0x80;
+    private const string FlipRegistryKey = @"HKEY_CURRENT_USER\Software\Win10PhoneLinkWebCam";
+    private const string FlipRegistryValue = "FlipFlags";
 
     private readonly object _writeLock = new();
     private readonly MemoryMappedFile _mmf;
@@ -44,6 +51,7 @@ public sealed unsafe class ShmWriter : IDisposable
     private byte* _basePtr;
     private ulong _writeSeq;
     private uint _activeSlot;
+    private byte _flipFlags;
     private bool _disposed;
 
     public ShmWriter()
@@ -99,8 +107,45 @@ public sealed unsafe class ShmWriter : IDisposable
             {
                 hdr->Reserved[i] = 0;
             }
+            hdr->Reserved[0] = _flipFlags;
             Thread.MemoryBarrier();
             Volatile.Write(ref hdr->WriteSeq, _writeSeq);
+        }
+    }
+
+    public void SetFlipFlags(bool flipHorizontal, bool flipVertical, bool preApplied = true, bool persistToRegistry = true)
+    {
+        byte flags = FlipNone;
+        if (flipHorizontal) flags |= FlipHorizontal;
+        if (flipVertical) flags |= FlipVertical;
+        if (preApplied) flags |= FlipPreApplied;
+
+        if (persistToRegistry)
+        {
+            try
+            {
+                int regVal = flags & (FlipHorizontal | FlipVertical);
+                Registry.SetValue(FlipRegistryKey, FlipRegistryValue, regVal, RegistryValueKind.DWord);
+            }
+            catch
+            {
+            }
+        }
+
+        lock (_writeLock)
+        {
+            _flipFlags = flags;
+            if (_disposed || _basePtr == null) return;
+
+            var hdr = (ShmHeader*)_basePtr;
+            if (hdr->Reserved[0] != flags)
+            {
+                hdr->Reserved[0] = flags;
+                hdr->Timestamp100Ns = GetQpcTimestamp100Ns();
+                Thread.MemoryBarrier();
+                _writeSeq++;
+                Volatile.Write(ref hdr->WriteSeq, _writeSeq);
+            }
         }
     }
 
@@ -144,6 +189,7 @@ public sealed unsafe class ShmWriter : IDisposable
             hdr->Stride = (uint)stride;
             hdr->Timestamp100Ns = GetQpcTimestamp100Ns();
             hdr->PayloadSize = (uint)required;
+            hdr->Reserved[0] = _flipFlags;
 
             Thread.MemoryBarrier();
             _activeSlot = nextSlot;
@@ -166,6 +212,7 @@ public sealed unsafe class ShmWriter : IDisposable
             hdr->Version = ShmVersion;
             hdr->FrameState = (uint)state;
             hdr->Timestamp100Ns = GetQpcTimestamp100Ns();
+            hdr->Reserved[0] = _flipFlags;
             Thread.MemoryBarrier();
             _writeSeq++;
             Volatile.Write(ref hdr->WriteSeq, _writeSeq);

@@ -28,11 +28,15 @@ public sealed class MainForm : Form
     private readonly ComboBox _decoderCombo;
     private readonly ComboBox _gpuCombo;
     private readonly Button _refreshGpuBtn;
+    private readonly CheckBox _flipHCheck;
+    private readonly CheckBox _flipVCheck;
     private readonly Button _applySettingsBtn;
     private readonly Button _resetSettingsBtn;
     private readonly Label _settingsFeedbackLabel;
 
     // Live tab controls
+    private readonly Button _flipHBtn;
+    private readonly Button _flipVBtn;
     private readonly Button _pauseBtn;
     private readonly Button _openSettingsBtn;
     private readonly Label _quickConfigSummary;
@@ -50,6 +54,8 @@ public sealed class MainForm : Form
     private readonly VideoPreviewControl _previewControl;
     private readonly ContextMenuStrip _previewMenu;
     private readonly ToolStripMenuItem _menuTogglePreview;
+    private readonly ToolStripMenuItem _menuFlipH;
+    private readonly ToolStripMenuItem _menuFlipV;
     private readonly ToolStripMenuItem _menuTogglePause;
     private readonly TextBox _logBox;
     private readonly System.Windows.Forms.Timer _uiTimer;
@@ -57,6 +63,7 @@ public sealed class MainForm : Form
     private string _currentToken;
     private bool _manualPaused;
     private volatile bool _previewEnabled = true;
+    private bool _updatingFlipUi;
     private int _paintPending;
     private long _lastPreviewUpdateTs = Stopwatch.GetTimestamp() - Stopwatch.Frequency;
 
@@ -103,7 +110,10 @@ public sealed class MainForm : Form
             gpuDeviceName: selectedGpu.Name,
             codecPreference: _settings.Codec,
             targetWidth: selectedRes.Width,
-            targetHeight: selectedRes.Height);
+            targetHeight: selectedRes.Height,
+            flipHorizontal: _settings.FlipHorizontal,
+            flipVertical: _settings.FlipVertical);
+        _shm.SetFlipFlags(_settings.FlipHorizontal, _settings.FlipVertical, preApplied: true, persistToRegistry: true);
         _server.FrameAvailable += OnFrameAvailable;
 
         var root = new TableLayoutPanel
@@ -262,6 +272,12 @@ public sealed class MainForm : Form
         _menuTogglePreview = new ToolStripMenuItem();
         _menuTogglePreview.Click += (_, _) => SetPreviewEnabled(!_previewEnabled);
 
+        _menuFlipH = new ToolStripMenuItem("좌/우 반전 (Horizontal Flip)");
+        _menuFlipH.Click += (_, _) => SetFlipState(!_settings.FlipHorizontal, _settings.FlipVertical);
+
+        _menuFlipV = new ToolStripMenuItem("상/하 반전 (Vertical Flip)");
+        _menuFlipV.Click += (_, _) => SetFlipState(_settings.FlipHorizontal, !_settings.FlipVertical);
+
         _menuTogglePause = new ToolStripMenuItem();
         _menuTogglePause.Click += (_, _) => TogglePause();
 
@@ -272,11 +288,13 @@ public sealed class MainForm : Form
                 ? "실시간 미리보기 화면 끄기 - 리소스 절감 (Preview OFF)"
                 : "실시간 미리보기 화면 켜기 (Preview ON)";
             _menuTogglePreview.Checked = _previewEnabled;
+            _menuFlipH.Checked = _settings.FlipHorizontal;
+            _menuFlipV.Checked = _settings.FlipVertical;
             _menuTogglePause.Text = _manualPaused
                 ? "가상 카메라 재개 (Resume Video)"
                 : "가상 카메라 일시중지 (Privacy Pause)";
         };
-        _previewMenu.Items.AddRange([_menuTogglePreview, new ToolStripSeparator(), _menuTogglePause]);
+        _previewMenu.Items.AddRange([_menuTogglePreview, new ToolStripSeparator(), _menuFlipH, _menuFlipV, new ToolStripSeparator(), _menuTogglePause]);
         _previewControl.ContextMenuStrip = _previewMenu;
         _liveTab.ContextMenuStrip = _previewMenu;
 
@@ -305,29 +323,54 @@ public sealed class MainForm : Form
         _decoderVal = AddTelemetryPair(telemetryPanel, 2, 2, "Active Decoder:", Protocol.FormatDecoderDisplayName(_settings.Decoder, "h264", _settings.GpuDeviceIndex, selectedGpu.Name));
         rightPanel.Controls.Add(telemetryPanel, 0, 1);
 
-        var quickBar = new Panel
+        var quickBar = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             BackColor = Color.FromArgb(32, 36, 46),
-            Padding = new Padding(10, 8, 10, 8),
+            Padding = new Padding(8, 6, 8, 6),
+            ColumnCount = 5,
+            RowCount = 1,
         };
+        quickBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        quickBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        quickBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        quickBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        quickBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        quickBar.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
         _quickConfigSummary = new Label
         {
-            Location = new Point(12, 14),
-            Width = 440,
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft,
             AutoEllipsis = true,
             ForeColor = Color.FromArgb(180, 210, 255),
             Text = string.Empty,
         };
-        _openSettingsBtn = MakeButton("설정 열기 (해상도/코덱/GPU)", new Point(460, 9), 185, Color.FromArgb(52, 108, 196));
-        _openSettingsBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _flipHBtn = MakeButton("좌/우 반전: OFF", Point.Empty, 108, Color.FromArgb(62, 70, 88));
+        _flipHBtn.Height = 30;
+        _flipHBtn.Margin = new Padding(4, 3, 0, 3);
+        _flipHBtn.Click += (_, _) => SetFlipState(!_settings.FlipHorizontal, _settings.FlipVertical);
+
+        _flipVBtn = MakeButton("상/하 반전: OFF", Point.Empty, 108, Color.FromArgb(62, 70, 88));
+        _flipVBtn.Height = 30;
+        _flipVBtn.Margin = new Padding(4, 3, 0, 3);
+        _flipVBtn.Click += (_, _) => SetFlipState(_settings.FlipHorizontal, !_settings.FlipVertical);
+
+        _openSettingsBtn = MakeButton("설정 열기", Point.Empty, 90, Color.FromArgb(52, 108, 196));
+        _openSettingsBtn.Height = 30;
+        _openSettingsBtn.Margin = new Padding(6, 3, 0, 3);
         _openSettingsBtn.Click += (_, _) => _rightTabs.SelectedTab = _settingsTab;
 
-        _pauseBtn = MakeButton("Privacy Pause", new Point(653, 9), 115, Color.FromArgb(180, 120, 32));
-        _pauseBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _pauseBtn = MakeButton("Privacy Pause", Point.Empty, 108, Color.FromArgb(180, 120, 32));
+        _pauseBtn.Height = 30;
+        _pauseBtn.Margin = new Padding(6, 3, 0, 3);
         _pauseBtn.Click += (_, _) => TogglePause();
 
-        quickBar.Controls.AddRange([_quickConfigSummary, _openSettingsBtn, _pauseBtn]);
+        quickBar.Controls.Add(_quickConfigSummary, 0, 0);
+        quickBar.Controls.Add(_flipHBtn, 1, 0);
+        quickBar.Controls.Add(_flipVBtn, 2, 0);
+        quickBar.Controls.Add(_openSettingsBtn, 3, 0);
+        quickBar.Controls.Add(_pauseBtn, 4, 0);
         rightPanel.Controls.Add(quickBar, 0, 2);
 
         // --- Tab 2: Dedicated Settings Page (Resolution / Codec / Decoder Device) ---
@@ -458,6 +501,43 @@ public sealed class MainForm : Form
         decCard.Controls.AddRange([decModeLbl, _decoderCombo, gpuLbl, _gpuCombo, _refreshGpuBtn, decHint]);
         settingsStack.Controls.Add(decCard);
 
+        // Card 4: Virtual Camera Flip Settings
+        GroupBox flipCard = MakeSettingsCard("4. 가상 카메라 화면 반전 (상/하/좌/우 반전)", 700, 102);
+        _flipHCheck = new CheckBox
+        {
+            Text = "좌/우 반전 (Horizontal Flip)",
+            Location = new Point(16, 30),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Checked = _settings.FlipHorizontal,
+        };
+        _flipVCheck = new CheckBox
+        {
+            Text = "상/하 반전 (Vertical Flip)",
+            Location = new Point(280, 30),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Checked = _settings.FlipVertical,
+        };
+        _flipHCheck.CheckedChanged += (_, _) =>
+        {
+            if (!_updatingFlipUi) SetFlipState(_flipHCheck.Checked, _flipVCheck.Checked);
+        };
+        _flipVCheck.CheckedChanged += (_, _) =>
+        {
+            if (!_updatingFlipUi) SetFlipState(_flipHCheck.Checked, _flipVCheck.Checked);
+        };
+        var flipHint = new Label
+        {
+            Text = "대기 화면과 송출 영상의 좌/우·상/하 반전을 즉시 전환합니다. (Discord 기본 미리보기에 맞춰 대기 화면은 기본 정방향 보정 적용됨)",
+            Location = new Point(16, 62),
+            Width = 665,
+            Height = 32,
+            ForeColor = Color.FromArgb(165, 175, 195),
+        };
+        flipCard.Controls.AddRange([_flipHCheck, _flipVCheck, flipHint]);
+        settingsStack.Controls.Add(flipCard);
+
         // Settings Action Buttons
         var actionPanel = new Panel
         {
@@ -502,6 +582,7 @@ public sealed class MainForm : Form
         _uiTimer.Tick += (_, _) => RefreshTelemetry();
 
         UpdateGpuComboEnabled();
+        UpdateFlipUiState();
         UpdateQuickSummary();
 
         Load += (_, _) =>
@@ -607,19 +688,23 @@ public sealed class MainForm : Form
         _settings.Codec = codec;
         _settings.Decoder = decoder;
         _settings.GpuDeviceIndex = gpu.DeviceIndex;
+        _settings.FlipHorizontal = _flipHCheck.Checked;
+        _settings.FlipVertical = _flipVCheck.Checked;
         _settings.Port = (int)_portInput.Value;
         _settings.Save();
 
         _server.SetTargetResolution(res.Width, res.Height);
         _server.SetCodecPreference(codec);
         _server.SetDecoderConfig(decoder, gpu.DeviceIndex, gpu.Name);
+        _server.SetFlip(_settings.FlipHorizontal, _settings.FlipVertical, persistToRegistry: true);
 
+        UpdateFlipUiState();
         UpdateQrDisplay();
         UpdateQuickSummary();
         RefreshTelemetry();
 
         _settingsFeedbackLabel.Text = "설정이 저장되고 즉시 적용되었습니다.";
-        AppendLog($"[Settings] Saved: res={res.Id}, codec={codec}, decoder={decoder}, gpu={gpu.DeviceIndex}");
+        AppendLog($"[Settings] Saved: res={res.Id}, codec={codec}, decoder={decoder}, gpu={gpu.DeviceIndex}, flipH={_settings.FlipHorizontal}, flipV={_settings.FlipVertical}");
     }
 
     private void ResetDefaultSettings()
@@ -629,9 +714,39 @@ public sealed class MainForm : Form
         SelectDecoderItem(DecoderMode.Nvdec);
         List<GpuDeviceOption> devices = Protocol.EnumerateGpuDevices();
         PopulateGpuCombo(devices, devices.FirstOrDefault(d => d.IsCudaCapable)?.DeviceIndex ?? -1);
+        _updatingFlipUi = true;
+        _flipHCheck.Checked = false;
+        _flipVCheck.Checked = false;
+        _updatingFlipUi = false;
         UpdateGpuComboEnabled();
         ApplyAndSaveSettings();
         _settingsFeedbackLabel.Text = "기본 설정으로 복원되었습니다.";
+    }
+
+    private void SetFlipState(bool flipH, bool flipV)
+    {
+        if (_settings.FlipHorizontal == flipH && _settings.FlipVertical == flipV) return;
+        _settings.FlipHorizontal = flipH;
+        _settings.FlipVertical = flipV;
+        _settings.Save();
+        _server.SetFlip(flipH, flipV, persistToRegistry: true);
+        UpdateFlipUiState();
+        UpdateQuickSummary();
+    }
+
+    private void UpdateFlipUiState()
+    {
+        bool h = _settings.FlipHorizontal;
+        bool v = _settings.FlipVertical;
+        _updatingFlipUi = true;
+        _flipHCheck.Checked = h;
+        _flipVCheck.Checked = v;
+        _updatingFlipUi = false;
+
+        _flipHBtn.Text = h ? "좌/우 반전: ON" : "좌/우 반전: OFF";
+        _flipHBtn.BackColor = h ? Color.FromArgb(46, 139, 87) : Color.FromArgb(62, 70, 88);
+        _flipVBtn.Text = v ? "상/하 반전: ON" : "상/하 반전: OFF";
+        _flipVBtn.BackColor = v ? Color.FromArgb(46, 139, 87) : Color.FromArgb(62, 70, 88);
     }
 
     private void UpdateQuickSummary()
@@ -650,7 +765,14 @@ public sealed class MainForm : Form
             DecoderMode.D3d11va => $"D3D11VA (GPU {_settings.GpuDeviceIndex})",
             _ => "CPU",
         };
-        _quickConfigSummary.Text = $"설정: {resTxt}  |  코덱: {codecTxt}  |  디코더: {decTxt}  |  미리보기: {(_previewEnabled ? "ON" : "OFF (절전)")}";
+        string flipTxt = (_settings.FlipHorizontal, _settings.FlipVertical) switch
+        {
+            (true, true) => "좌우+상하",
+            (true, false) => "좌우",
+            (false, true) => "상하",
+            _ => "기본",
+        };
+        _quickConfigSummary.Text = $"{resTxt} | {codecTxt} | {decTxt} | 반전: {flipTxt} | 미리보기: {(_previewEnabled ? "ON" : "OFF")}";
     }
 
     private static Button MakeButton(string text, Point location, int width, Color backColor)

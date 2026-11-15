@@ -66,8 +66,10 @@ internal static class Program
         int targetW = GetIntArg(args, "--width", 0);
         int targetH = GetIntArg(args, "--height", 0);
         int durationSec = Math.Max(1, GetIntArg(args, "--duration", 10));
+        bool flipH = HasFlag(args, "--flip-h");
+        bool flipV = HasFlag(args, "--flip-v");
 
-        Console.WriteLine($"[Headless] Starting PhoneCamReceiver port={port} decoder={decoder} gpu={gpuIdx} codec={codecPref} duration={durationSec}s");
+        Console.WriteLine($"[Headless] Starting PhoneCamReceiver port={port} decoder={decoder} gpu={gpuIdx} codec={codecPref} flipH={flipH} flipV={flipV} duration={durationSec}s");
         Console.Out.Flush();
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(durationSec));
@@ -82,7 +84,7 @@ internal static class Program
         {
             Console.WriteLine(line);
             Console.Out.Flush();
-        }, gpuDeviceIndex: gpuIdx, codecPreference: codecPref, targetWidth: targetW, targetHeight: targetH);
+        }, gpuDeviceIndex: gpuIdx, codecPreference: codecPref, targetWidth: targetW, targetHeight: targetH, flipHorizontal: flipH, flipVertical: flipV);
 
         try
         {

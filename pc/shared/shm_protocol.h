@@ -35,6 +35,13 @@ enum class PixelFormat : uint32_t {
     RGB24 = 3,  // Top-down packed [R, G, B], 3 bytes per pixel
 };
 
+namespace FlipFlags {
+inline constexpr uint8_t kNone = 0x00u;
+inline constexpr uint8_t kHorizontal = 0x01u; // Mirror left/right
+inline constexpr uint8_t kVertical = 0x02u;   // Flip top/bottom
+inline constexpr uint8_t kPreApplied = 0x80u; // Producer already flipped live frame pixels in SHM
+} // namespace FlipFlags
+
 #pragma pack(push, 1)
 struct ShmHeader {
     uint32_t magic;          // Offset 0: 0x504C434D ('PLCM')

@@ -35,6 +35,7 @@ public:
         const TargetFormatDesc& dst,
         uint64_t frameIndex,
         bool isPaused,
+        uint8_t flipFlags,
         uint8_t* dstBuf,
         size_t dstBufBytes);
 
