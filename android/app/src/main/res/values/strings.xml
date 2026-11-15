@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Win10 PhoneCam</string>
+    <string name="subtitle_device">Android Wireless Webcam Companion</string>
+
+    <string name="status_idle">Ready (Not Connected)</string>
+    <string name="status_connecting">Connecting to PC…</string>
+    <string name="status_streaming">Streaming Live</string>
+    <string name="status_reconnecting">Reconnecting…</string>
+    <string name="status_error">Connection Error</string>
+
+    <string name="no_pc_paired">No PC paired yet. Scan QR code or enter PC IP.</string>
+    <string name="btn_scan_qr">Scan QR</string>
+    <string name="btn_manual_ip">Manual IP</string>
+    <string name="btn_start_stream">Start Streaming</string>
+    <string name="btn_stop_stream">Stop Streaming</string>
+    <string name="btn_sync_idr">IDR</string>
+    <string name="btn_grant_camera">Grant Camera Permission</string>
+
+    <string name="section_stream_settings">스트리밍 설정 (해상도 / 코덱 / 인코더 장치)</string>
+    <string name="label_camera_lens">Camera Lens</string>
+    <string name="label_codec">코덱 설정 (Video Codec)</string>
+    <string name="label_encoder">인코더 장치 설정 (Hardware Encoder)</string>
+    <string name="btn_select_hw_encoder">장치 지원 HW 가속 목록 확인 / 선택</string>
+    <string name="hw_dialog_title">장치 지원 HW 가속 인코더 선택</string>
+    <string name="label_resolution">해상도 설정 (Resolution)</string>
+    <string name="label_fps">Frame Rate</string>
+    <string name="label_bitrate">Bitrate</string>
+    <string name="label_rotation">Orientation</string>
+
+    <string name="manual_dialog_title">Manual PC Connection</string>
+    <string name="hint_pc_ip">PC LAN IP (or 127.0.0.1 for ADB)</string>
+    <string name="hint_pc_port">Port (default 9876)</string>
+    <string name="hint_pc_token">Pairing Token (16 hex chars)</string>
+    <string name="hint_pc_name">PC Name (optional)</string>
+    <string name="btn_connect">Connect &amp; Stream</string>
+    <string name="btn_cancel">Cancel</string>
+    <string name="err_invalid_manual_input">Enter valid IP address, port (1-65535), and token.</string>
+
+    <string name="qr_scan_instruction">Point camera at the QR code shown in PhoneCamReceiver on your Windows 10 PC</string>
+    <string name="qr_torch_toggle">Flashlight</string>
+    <string name="qr_manual_fallback">Enter Manually</string>
+    <string name="qr_invalid_payload">QR code is not a valid Win10 PhoneCam pairing payload.</string>
+
+    <string name="permission_camera_required">Camera permission is required for preview, QR scanning, and webcam streaming.</string>
+    <string name="notif_channel_name">Camera Streaming</string>
+    <string name="notif_channel_desc">Keeps Android camera streaming active to Windows 10 PC.</string>
+    <string name="notif_title">Streaming Webcam to Windows 10</string>
+    <string name="notif_stop_action">Stop</string>
+    <string name="preview_placeholder">Camera preview appears here once permission is granted.</string>
+</resources>

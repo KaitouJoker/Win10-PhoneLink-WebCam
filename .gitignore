@@ -1,0 +1,13 @@
+﻿.toolchain/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+pc/receiver-host/bin/
+pc/receiver-host/obj/
+pc/vcam-dshow/build/
+pc/tests/*.png
+pc/tests/__pycache__/
+**/*.pdb
+**/ffmpeg.exe
+dist/Portable-Win10-PhoneLink-WebCam/settings.json
