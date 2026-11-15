@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.StringRes
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
@@ -45,12 +46,17 @@ class QrScannerActivity : AppCompatActivity() {
         super.attachBaseContext(LocaleHelper.wrapContext(newBase))
     }
 
+    private fun lStr(@StringRes resId: Int, vararg formatArgs: Any): String {
+        val res = LocaleHelper.getLocalizedResources(this)
+        return if (formatArgs.isEmpty()) res.getString(resId) else res.getString(resId, *formatArgs)
+    }
+
     private val cameraPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) {
                 startCameraScanner()
             } else {
-                Toast.makeText(this, R.string.permission_camera_required, Toast.LENGTH_LONG).show()
+                Toast.makeText(this, lStr(R.string.permission_camera_required), Toast.LENGTH_LONG).show()
                 setResult(RESULT_CANCELED)
                 finish()
             }
@@ -60,6 +66,11 @@ class QrScannerActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityQrScannerBinding.inflate(layoutInflater)
         setContentView(binding.root)
+
+        binding.textInstruction.text = lStr(R.string.qr_scan_instruction)
+        binding.btnToggleTorch.text = lStr(R.string.qr_torch_toggle)
+        binding.btnManualFallback.text = lStr(R.string.qr_manual_fallback)
+        binding.btnCloseScanner.text = lStr(R.string.btn_cancel)
 
         analysisExecutor = Executors.newSingleThreadExecutor()
 
@@ -209,7 +220,7 @@ class QrScannerActivity : AppCompatActivity() {
                             runOnUiThread {
                                 Toast.makeText(
                                     this@QrScannerActivity,
-                                    R.string.qr_invalid_payload,
+                                    lStr(R.string.qr_invalid_payload),
                                     Toast.LENGTH_SHORT
                                 ).show()
                             }

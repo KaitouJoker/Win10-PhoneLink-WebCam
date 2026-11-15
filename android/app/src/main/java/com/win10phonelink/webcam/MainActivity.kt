@@ -22,7 +22,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
-import android.view.MotionEvent
 import android.view.Surface
 import android.view.TextureView
 import android.view.View
@@ -31,6 +30,7 @@ import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.StringRes
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -83,11 +83,16 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     }
 
     private var suppressSpinnerEvents: Boolean = true
-    private var languageSpinnerTouched: Boolean = false
     private var latestState: StreamConnectionState = StreamConnectionState.IDLE
+    private var latestTelemetry: StreamTelemetry = StreamTelemetry()
 
     override fun attachBaseContext(newBase: Context) {
         super.attachBaseContext(LocaleHelper.wrapContext(newBase))
+    }
+
+    private fun lStr(@StringRes resId: Int, vararg formatArgs: Any): String {
+        val res = LocaleHelper.getLocalizedResources(this)
+        return if (formatArgs.isEmpty()) res.getString(resId) else res.getString(resId, *formatArgs)
     }
 
     private var streamService: CameraStreamService? = null
@@ -119,7 +124,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
                 }
             } else {
                 pendingActionAfterPermission = null
-                Toast.makeText(this, R.string.permission_camera_required, Toast.LENGTH_LONG).show()
+                Toast.makeText(this, lStr(R.string.permission_camera_required), Toast.LENGTH_LONG).show()
             }
         }
 
@@ -173,11 +178,12 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        binding.textSubtitle.text = "${getString(R.string.subtitle_device)} • ${Build.MANUFACTURER} ${Build.MODEL}"
+        binding.textSubtitle.text = "${lStr(R.string.subtitle_device)} • ${Build.MANUFACTURER} ${Build.MODEL}"
 
         loadSavedPairing()
         setupCatalogsAndSpinners()
         setupButtons()
+        applyLanguageToUi()
 
         val savedEnc = prefs.getString(KEY_ENCODER_NAME, null)
         val needPrompt = !prefs.getBoolean(KEY_HW_ACCEL_PROMPTED, false) ||
@@ -192,7 +198,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
             val hwCount = allEncoders.count { it.isHardware }
             Toast.makeText(
                 this,
-                getString(R.string.toast_hw_summary, hwCount, selectedEncoder?.codecName ?: "-"),
+                lStr(R.string.toast_hw_summary, hwCount, selectedEncoder?.codecName ?: "-"),
                 Toast.LENGTH_SHORT
             ).show()
         }
@@ -243,6 +249,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         LocaleHelper.wrapContext(this)
+        applyLanguageToUi()
         configurePreviewTransform()
     }
 
@@ -303,7 +310,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
 
         binding.btnRequestSync.setOnClickListener {
             streamService?.requestSyncFrame()
-            Toast.makeText(this, R.string.toast_idr_requested, Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, lStr(R.string.toast_idr_requested), Toast.LENGTH_SHORT).show()
         }
 
         binding.btnSelectHwEncoder.setOnClickListener {
@@ -352,16 +359,9 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
             binding.spinnerLens.setSelection(lensIdx, false)
         }
 
-        val isKorean = LocaleHelper.isKorean(this)
+        val activeLang = LocaleHelper.getLanguage(this)
         val codecValues = CodecFamily.values().toList()
-        val codecOptions = codecValues.map { family ->
-            val label = when (family) {
-                CodecFamily.H264 -> if (isKorean) "H.264 / AVC (저지연 권장)" else "H.264 / AVC (Low Latency)"
-                CodecFamily.HEVC -> if (isKorean) "HEVC / H.265 (고효율 압축)" else "HEVC / H.265 (High Efficiency)"
-            }
-            LabeledOption(family, label)
-        }
-        binding.spinnerCodec.adapter = makeSpinnerAdapter(codecOptions)
+        binding.spinnerCodec.adapter = makeSpinnerAdapter(buildCodecOptions(activeLang))
         binding.spinnerCodec.setSelection(codecValues.indexOf(selectedCodec), false)
 
         refilterEncoderSpinner(preferredCodecName = savedEncoderName)
@@ -379,7 +379,40 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         binding.spinnerBitrate.setSelection(bitrateValues.indexOf(selectedBitrate), false)
 
         val rotValues = RotationMode.values().toList()
-        val rotOptions = rotValues.map { mode ->
+        binding.spinnerRotation.adapter = makeSpinnerAdapter(buildRotationOptions(activeLang))
+        binding.spinnerRotation.setSelection(rotValues.indexOf(selectedRotation), false)
+
+        val langValues = listOf(
+            LabeledOption(LocaleHelper.LANG_KO, lStr(R.string.lang_korean)),
+            LabeledOption(LocaleHelper.LANG_EN, lStr(R.string.lang_english))
+        )
+        binding.spinnerLanguage.adapter = makeSpinnerAdapter(langValues)
+        binding.spinnerLanguage.setSelection(
+            langValues.indexOfFirst { it.value == activeLang }.coerceAtLeast(0),
+            false
+        )
+
+        attachSpinnerListeners(codecValues, resValues, fpsValues, bitrateValues, rotValues, langValues.map { it.value })
+
+        binding.root.post {
+            suppressSpinnerEvents = false
+        }
+    }
+
+    private fun buildCodecOptions(langCode: String = LocaleHelper.getLanguage(this)): List<LabeledOption<CodecFamily>> {
+        val isKorean = LocaleHelper.normalizeLanguage(langCode) == LocaleHelper.LANG_KO
+        return CodecFamily.values().map { family ->
+            val label = when (family) {
+                CodecFamily.H264 -> if (isKorean) "H.264 / AVC (저지연 권장)" else "H.264 / AVC (Low Latency)"
+                CodecFamily.HEVC -> if (isKorean) "HEVC / H.265 (고효율 압축)" else "HEVC / H.265 (High Efficiency)"
+            }
+            LabeledOption(family, label)
+        }
+    }
+
+    private fun buildRotationOptions(langCode: String = LocaleHelper.getLanguage(this)): List<LabeledOption<RotationMode>> {
+        val isKorean = LocaleHelper.normalizeLanguage(langCode) == LocaleHelper.LANG_KO
+        return RotationMode.values().map { mode ->
             val label = if (isKorean) {
                 when (mode) {
                     RotationMode.AUTO -> "자동 (센서)"
@@ -392,33 +425,6 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
                 mode.label
             }
             LabeledOption(mode, label)
-        }
-        binding.spinnerRotation.adapter = makeSpinnerAdapter(rotOptions)
-        binding.spinnerRotation.setSelection(rotValues.indexOf(selectedRotation), false)
-
-        val langValues = listOf(
-            LabeledOption(LocaleHelper.LANG_KO, getString(R.string.lang_korean)),
-            LabeledOption(LocaleHelper.LANG_EN, getString(R.string.lang_english))
-        )
-        val activeLang = LocaleHelper.getLanguage(this)
-        languageSpinnerTouched = false
-        binding.spinnerLanguage.adapter = makeSpinnerAdapter(langValues)
-        binding.spinnerLanguage.setSelection(
-            langValues.indexOfFirst { it.value == activeLang }.coerceAtLeast(0),
-            false
-        )
-        binding.spinnerLanguage.setOnTouchListener { _, event ->
-            if (event.action == MotionEvent.ACTION_DOWN || event.action == MotionEvent.ACTION_UP) {
-                languageSpinnerTouched = true
-            }
-            false
-        }
-
-        attachSpinnerListeners(codecValues, resValues, fpsValues, bitrateValues, rotValues, langValues.map { it.value })
-
-        binding.root.post {
-            languageSpinnerTouched = false
-            suppressSpinnerEvents = false
         }
     }
 
@@ -592,8 +598,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
 
         binding.spinnerLanguage.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
-                if (suppressSpinnerEvents || !languageSpinnerTouched || pos !in langValues.indices) return
-                languageSpinnerTouched = false
+                if (suppressSpinnerEvents || pos !in langValues.indices) return
                 val nextLang = langValues[pos]
                 if (nextLang != LocaleHelper.getLanguage(this@MainActivity)) {
                     switchAppLanguage(nextLang)
@@ -605,54 +610,97 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     }
 
     private fun switchAppLanguage(langCode: String) {
-        suppressSpinnerEvents = true
-        languageSpinnerTouched = false
         val normalized = LocaleHelper.setLanguage(this, langCode)
-        binding.spinnerLanguage.setSelection(if (normalized == LocaleHelper.LANG_KO) 0 else 1, false)
-        LocaleHelper.applyLocale(this)
-        recreate()
+        LocaleHelper.wrapContext(this)
+        applyLanguageToUi(normalized)
+    }
+
+    private fun applyLanguageToUi(langCode: String = LocaleHelper.getLanguage(this)) {
+        val prevSuppress = suppressSpinnerEvents
+        suppressSpinnerEvents = true
+        try {
+            binding.textTitle.text = lStr(R.string.app_name)
+            binding.textSubtitle.text = "${lStr(R.string.subtitle_device)} • ${Build.MANUFACTURER} ${Build.MODEL}"
+            binding.btnOpenSettings.text = lStr(R.string.btn_settings)
+            binding.btnScanQr.text = lStr(R.string.btn_scan_qr)
+            binding.btnManualConnect.text = lStr(R.string.btn_manual_ip)
+            binding.textPreviewPlaceholder.text = lStr(R.string.preview_placeholder)
+            binding.btnGrantPermission.text = lStr(R.string.btn_grant_camera)
+            binding.btnRequestSync.text = lStr(R.string.btn_sync_idr)
+            binding.textSectionStreamSettings.text = lStr(R.string.section_stream_settings)
+            binding.labelCameraLens.text = lStr(R.string.label_camera_lens)
+            binding.labelResolution.text = lStr(R.string.label_resolution)
+            binding.labelFps.text = lStr(R.string.label_fps)
+            binding.labelCodec.text = lStr(R.string.label_codec)
+            binding.labelEncoder.text = lStr(R.string.label_encoder)
+            binding.btnSelectHwEncoder.text = lStr(R.string.btn_select_hw_encoder)
+            binding.labelBitrate.text = lStr(R.string.label_bitrate)
+            binding.labelRotation.text = lStr(R.string.label_rotation)
+            binding.labelLanguage.text = lStr(R.string.label_language)
+
+            val codecValues = CodecFamily.values().toList()
+            binding.spinnerCodec.adapter = makeSpinnerAdapter(buildCodecOptions(langCode))
+            binding.spinnerCodec.setSelection(codecValues.indexOf(selectedCodec).coerceAtLeast(0), false)
+
+            val rotValues = RotationMode.values().toList()
+            binding.spinnerRotation.adapter = makeSpinnerAdapter(buildRotationOptions(langCode))
+            binding.spinnerRotation.setSelection(rotValues.indexOf(selectedRotation).coerceAtLeast(0), false)
+
+            val targetLangIdx = if (LocaleHelper.normalizeLanguage(langCode) == LocaleHelper.LANG_KO) 0 else 1
+            if (binding.spinnerLanguage.selectedItemPosition != targetLangIdx) {
+                binding.spinnerLanguage.setSelection(targetLangIdx, false)
+            }
+
+            updateEncoderDetailText()
+            renderPairedTarget()
+            renderTelemetry(latestTelemetry)
+        } finally {
+            if (!prevSuppress) {
+                binding.root.post { suppressSpinnerEvents = false }
+            }
+        }
     }
 
     private fun showAppSettingsDialog() {
         val options = arrayOf(
-            getString(R.string.lang_korean),
-            getString(R.string.lang_english)
+            lStr(R.string.lang_korean),
+            lStr(R.string.lang_english)
         )
         val codes = arrayOf(LocaleHelper.LANG_KO, LocaleHelper.LANG_EN)
         val currentCode = LocaleHelper.getLanguage(this)
         var chosenIdx = codes.indexOf(currentCode).coerceAtLeast(0)
 
         MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.settings_dialog_title)
+            .setTitle(lStr(R.string.settings_dialog_title))
             .setSingleChoiceItems(options, chosenIdx) { _, which ->
                 chosenIdx = which
             }
-            .setNeutralButton(R.string.settings_hw_encoder_item) { _, _ ->
+            .setNeutralButton(lStr(R.string.settings_hw_encoder_item)) { _, _ ->
                 showHwAccelerationSelectorDialog(isStartup = false)
             }
-            .setPositiveButton(R.string.btn_apply) { _, _ ->
+            .setPositiveButton(lStr(R.string.btn_apply)) { _, _ ->
                 val nextCode = codes[chosenIdx]
                 if (nextCode != currentCode) {
                     switchAppLanguage(nextCode)
                 }
             }
-            .setNegativeButton(R.string.btn_close, null)
+            .setNegativeButton(lStr(R.string.btn_close), null)
             .show()
     }
 
     private fun updateEncoderDetailText() {
         val enc = selectedEncoder
         if (enc == null) {
-            binding.textEncoderDetail.setText(R.string.encoder_detail_none)
+            binding.textEncoderDetail.text = lStr(R.string.encoder_detail_none)
             return
         }
         val hwCount = allEncoders.count { it.isHardware }
         val modeDesc = buildString {
             append(
                 if (enc.isHardware) {
-                    getString(R.string.encoder_detail_hw, enc.vendorLabel)
+                    lStr(R.string.encoder_detail_hw, enc.vendorLabel)
                 } else {
-                    getString(R.string.encoder_detail_sw)
+                    lStr(R.string.encoder_detail_sw)
                 }
             )
             append(" • ${enc.mimeType}")
@@ -664,7 +712,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
                 }
             )
             if (enc.supports1080p60) append(" • 1080p60")
-            append(" • ${getString(R.string.encoder_detail_count, hwCount, allEncoders.size)}")
+            append(" • ${lStr(R.string.encoder_detail_count, hwCount, allEncoders.size)}")
         }
         binding.textEncoderDetail.text = modeDesc
     }
@@ -672,13 +720,13 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     private fun showHwAccelerationSelectorDialog(isStartup: Boolean) {
         val candidates = VideoEncoderCatalog.discoverHardwareEncoders()
         if (candidates.isEmpty()) {
-            Toast.makeText(this, R.string.toast_no_encoders, Toast.LENGTH_LONG).show()
+            Toast.makeText(this, lStr(R.string.toast_no_encoders), Toast.LENGTH_LONG).show()
             return
         }
 
         val isKorean = LocaleHelper.isKorean(this)
         val labels = candidates.map { opt ->
-            val hwTag = if (opt.isHardware) "HW (${opt.vendorLabel})" else getString(R.string.encoder_detail_sw)
+            val hwTag = if (opt.isHardware) "HW (${opt.vendorLabel})" else lStr(R.string.encoder_detail_sw)
             val rc = when {
                 opt.supportsCbr -> "CBR"
                 opt.supportsVbr -> "VBR"
@@ -698,9 +746,9 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
 
         val hwCount = candidates.count { it.isHardware }
         val title = if (isStartup) {
-            getString(R.string.hw_dialog_startup_title, Build.MODEL, hwCount)
+            lStr(R.string.hw_dialog_startup_title, Build.MODEL, hwCount)
         } else {
-            getString(R.string.hw_dialog_title)
+            lStr(R.string.hw_dialog_title)
         }
 
         MaterialAlertDialogBuilder(this)
@@ -708,11 +756,11 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
             .setSingleChoiceItems(labels, chosenIdx) { _, which ->
                 chosenIdx = which
             }
-            .setPositiveButton(R.string.btn_apply) { _, _ ->
+            .setPositiveButton(lStr(R.string.btn_apply)) { _, _ ->
                 val chosen = candidates[chosenIdx]
                 applyChosenEncoder(chosen)
             }
-            .setNegativeButton(R.string.btn_cancel) { _, _ ->
+            .setNegativeButton(lStr(R.string.btn_cancel)) { _, _ ->
                 prefs.edit().putBoolean(KEY_HW_ACCEL_PROMPTED, true).apply()
             }
             .show()
@@ -743,6 +791,10 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
 
     private fun showManualConnectDialog() {
         val dlgBinding = DialogManualConnectBinding.inflate(layoutInflater)
+        dlgBinding.inputLayoutIp.hint = lStr(R.string.hint_pc_ip)
+        dlgBinding.inputLayoutPort.hint = lStr(R.string.hint_pc_port)
+        dlgBinding.inputLayoutToken.hint = lStr(R.string.hint_pc_token)
+        dlgBinding.inputLayoutPcName.hint = lStr(R.string.hint_pc_name)
         currentPairing?.let { existing ->
             dlgBinding.editIp.setText(existing.ip)
             dlgBinding.editPort.setText(existing.port.toString())
@@ -751,22 +803,22 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         }
 
         MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.manual_dialog_title)
+            .setTitle(lStr(R.string.manual_dialog_title))
             .setView(dlgBinding.root)
-            .setPositiveButton(R.string.btn_connect) { _, _ ->
+            .setPositiveButton(lStr(R.string.btn_connect)) { _, _ ->
                 val ip = dlgBinding.editIp.text?.toString()?.trim().orEmpty()
                 val port = dlgBinding.editPort.text?.toString()?.trim()?.toIntOrNull() ?: -1
                 val token = dlgBinding.editToken.text?.toString()?.trim().orEmpty()
                 val pcName = dlgBinding.editPcName.text?.toString()?.trim().orEmpty()
 
                 if (ip.isEmpty() || port !in 1..65535 || token.isEmpty()) {
-                    Toast.makeText(this, R.string.err_invalid_manual_input, Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, lStr(R.string.err_invalid_manual_input), Toast.LENGTH_LONG).show()
                     return@setPositiveButton
                 }
                 savePairing(PairingPayload(version = 1, ip = ip, port = port, token = token, name = pcName))
                 startStreamingWithChecks()
             }
-            .setNegativeButton(R.string.btn_cancel, null)
+            .setNegativeButton(lStr(R.string.btn_cancel), null)
             .show()
     }
 
@@ -785,10 +837,10 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     private fun renderPairedTarget() {
         val pairing = currentPairing
         if (pairing == null) {
-            binding.textPairedTarget.text = getString(R.string.no_pc_paired)
+            binding.textPairedTarget.text = lStr(R.string.no_pc_paired)
             binding.textPairedTarget.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
         } else {
-            binding.textPairedTarget.text = getString(
+            binding.textPairedTarget.text = lStr(
                 R.string.paired_pc_format,
                 pairing.toDisplaySummary(),
                 pairing.token.take(4)
@@ -805,14 +857,14 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         }
         val pairing = currentPairing
         if (pairing == null) {
-            Toast.makeText(this, R.string.no_pc_paired, Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, lStr(R.string.no_pc_paired), Toast.LENGTH_SHORT).show()
             showManualConnectDialog()
             return
         }
         val lens = selectedLens ?: lensOptions.firstOrNull()
         val encoder = selectedEncoder ?: encoderOptions.firstOrNull()
         if (lens == null || encoder == null) {
-            Toast.makeText(this, R.string.toast_missing_lens_encoder, Toast.LENGTH_LONG).show()
+            Toast.makeText(this, lStr(R.string.toast_missing_lens_encoder), Toast.LENGTH_LONG).show()
             return
         }
 
@@ -863,6 +915,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
 
     private fun renderTelemetry(telemetry: StreamTelemetry) {
         val prevState = latestState
+        latestTelemetry = telemetry
         latestState = telemetry.state
 
         val active = isStreamActive()
@@ -873,11 +926,11 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         }
 
         val (statusText, dotColorRes) = when (telemetry.state) {
-            StreamConnectionState.IDLE -> getString(R.string.status_idle) to R.color.text_secondary
-            StreamConnectionState.CONNECTING -> getString(R.string.status_connecting) to R.color.accent_amber
-            StreamConnectionState.STREAMING -> getString(R.string.status_streaming) to R.color.accent_green
-            StreamConnectionState.RECONNECTING -> getString(R.string.status_reconnecting) to R.color.accent_amber
-            StreamConnectionState.ERROR -> getString(R.string.status_error) to R.color.accent_red
+            StreamConnectionState.IDLE -> lStr(R.string.status_idle) to R.color.text_secondary
+            StreamConnectionState.CONNECTING -> lStr(R.string.status_connecting) to R.color.accent_amber
+            StreamConnectionState.STREAMING -> lStr(R.string.status_streaming) to R.color.accent_green
+            StreamConnectionState.RECONNECTING -> lStr(R.string.status_reconnecting) to R.color.accent_amber
+            StreamConnectionState.ERROR -> lStr(R.string.status_error) to R.color.accent_red
         }
 
         binding.textStatus.text = statusText
@@ -885,13 +938,13 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
             ColorStateList.valueOf(ContextCompat.getColor(this, dotColorRes))
 
         if (active) {
-            binding.btnToggleStream.setText(R.string.btn_stop_stream)
+            binding.btnToggleStream.text = lStr(R.string.btn_stop_stream)
             binding.btnToggleStream.setIconResource(R.drawable.ic_videocam_off)
             binding.btnToggleStream.backgroundTintList =
                 ColorStateList.valueOf(ContextCompat.getColor(this, R.color.accent_red))
             binding.btnRequestSync.isEnabled = telemetry.state == StreamConnectionState.STREAMING
         } else {
-            binding.btnToggleStream.setText(R.string.btn_start_stream)
+            binding.btnToggleStream.text = lStr(R.string.btn_start_stream)
             binding.btnToggleStream.setIconResource(R.drawable.ic_videocam)
             binding.btnToggleStream.backgroundTintList =
                 ColorStateList.valueOf(ContextCompat.getColor(this, R.color.accent_blue))

@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.content.res.Configuration
 import android.content.res.Resources
+import android.os.LocaleList
 import java.util.Locale
 
 object LocaleHelper {
@@ -42,26 +43,34 @@ object LocaleHelper {
 
     fun isKorean(context: Context): Boolean = getLanguage(context) == LANG_KO
 
-    @Suppress("DEPRECATION")
-    fun applyLocale(context: Context): Context {
-        val lang = getLanguage(context)
-        val locale = Locale(lang)
-        Locale.setDefault(locale)
+    fun getLocale(langCode: String): Locale {
+        return if (normalizeLanguage(langCode) == LANG_KO) Locale.KOREAN else Locale.ENGLISH
+    }
 
+    fun getLocalizedContext(
+        context: Context,
+        langCode: String = getLanguage(context)
+    ): Context {
+        val locale = getLocale(langCode)
         val config = Configuration(context.resources.configuration)
+        config.setLocales(LocaleList(locale))
         config.setLocale(locale)
         config.setLayoutDirection(locale)
-        context.resources.updateConfiguration(config, context.resources.displayMetrics)
-
-        context.applicationContext?.resources?.let { appRes ->
-            val appConfig = Configuration(appRes.configuration)
-            appConfig.setLocale(locale)
-            appConfig.setLayoutDirection(locale)
-            appRes.updateConfiguration(appConfig, appRes.displayMetrics)
-        }
-
         return context.createConfigurationContext(config)
     }
 
-    fun wrapContext(base: Context): Context = applyLocale(base)
+    fun getLocalizedResources(
+        context: Context,
+        langCode: String = getLanguage(context)
+    ): Resources {
+        return getLocalizedContext(context, langCode).resources
+    }
+
+    fun wrapContext(base: Context): Context {
+        val lang = getLanguage(base)
+        Locale.setDefault(getLocale(lang))
+        return getLocalizedContext(base, lang)
+    }
+
+    fun applyLocale(context: Context): Context = wrapContext(context)
 }
