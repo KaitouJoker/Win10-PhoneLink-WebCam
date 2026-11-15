@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Win10 PhoneCam</string>
+    <string name="subtitle_device">Android 무선 웹캠 컴패니언</string>
+
+    <string name="status_idle">대기 중 (미연결)</string>
+    <string name="status_connecting">PC에 연결 중…</string>
+    <string name="status_streaming">실시간 송출 중</string>
+    <string name="status_reconnecting">재연결 중…</string>
+    <string name="status_error">연결 오류</string>
+
+    <string name="no_pc_paired">연결된 PC가 없습니다. QR 스캔 또는 IP 직접 입력을 사용하세요.</string>
+    <string name="btn_scan_qr">QR 스캔</string>
+    <string name="btn_manual_ip">IP 입력</string>
+    <string name="btn_settings">설정</string>
+    <string name="btn_start_stream">스트리밍 시작</string>
+    <string name="btn_stop_stream">스트리밍 중지</string>
+    <string name="btn_sync_idr">IDR</string>
+    <string name="btn_grant_camera">카메라 권한 허용</string>
+
+    <string name="section_stream_settings">스트리밍 설정 (해상도 / 코덱 / 인코더 / 언어)</string>
+    <string name="label_camera_lens">카메라 렌즈</string>
+    <string name="label_codec">코덱 설정 (Video Codec)</string>
+    <string name="label_encoder">인코더 장치 설정 (Hardware Encoder)</string>
+    <string name="btn_select_hw_encoder">장치 지원 HW 가속 목록 확인 / 선택</string>
+    <string name="hw_dialog_title">장치 지원 HW 가속 인코더 선택</string>
+    <string name="hw_dialog_startup_title">%1$s HW 가속 인코더 (%2$d개 감지)</string>
+    <string name="label_resolution">해상도 설정 (Resolution)</string>
+    <string name="label_fps">프레임레이트 (FPS)</string>
+    <string name="label_bitrate">비트레이트 (Bitrate)</string>
+    <string name="label_rotation">화면 방향</string>
+    <string name="label_language">언어 설정 (Language)</string>
+
+    <string name="settings_dialog_title">앱 설정 (Settings)</string>
+    <string name="settings_language_label">표시 언어 (초기 실행 시 시스템 언어 자동 인식)</string>
+    <string name="settings_hw_encoder_item">장치 지원 HW 가속 인코더 목록</string>
+    <string name="btn_apply">선택 적용</string>
+    <string name="btn_close">닫기</string>
+
+    <string name="manual_dialog_title">PC 수동 연결</string>
+    <string name="hint_pc_ip">PC LAN IP (ADB는 127.0.0.1)</string>
+    <string name="hint_pc_port">포트 (기본값 9876)</string>
+    <string name="hint_pc_token">페어링 토큰 (16자리 HEX)</string>
+    <string name="hint_pc_name">PC 이름 (선택사항)</string>
+    <string name="btn_connect">연결 및 스트리밍</string>
+    <string name="btn_cancel">취소</string>
+    <string name="err_invalid_manual_input">올바른 IP 주소, 포트(1-65535), 토큰을 입력하세요.</string>
+
+    <string name="qr_scan_instruction">Windows 10 PC의 PhoneCamReceiver 화면에 표시된 QR 코드를 비추세요</string>
+    <string name="qr_torch_toggle">플래시</string>
+    <string name="qr_manual_fallback">직접 입력</string>
+    <string name="qr_invalid_payload">유효한 Win10 PhoneCam 페어링 QR 코드가 아닙니다.</string>
+
+    <string name="permission_camera_required">미리보기, QR 스캔 및 웹캠 송출을 위해 카메라 권한이 필요합니다.</string>
+    <string name="notif_channel_name">카메라 스트리밍</string>
+    <string name="notif_channel_desc">Windows 10 PC로 Android 카메라 영상을 계속 전송합니다.</string>
+    <string name="notif_title">Windows 10 PC로 웹캠 송출 중</string>
+    <string name="notif_stop_action">중지</string>
+    <string name="preview_placeholder">카메라 권한을 허용하면 여기에 미리보기가 표시됩니다.</string>
+
+    <string name="toast_idr_requested">IDR 키프레임을 요청했습니다</string>
+    <string name="toast_missing_lens_encoder">카메라 렌즈 또는 비디오 인코더를 찾을 수 없습니다.</string>
+    <string name="toast_no_encoders">사용 가능한 비디오 인코더를 찾지 못했습니다.</string>
+    <string name="toast_hw_summary">감지된 HW 가속 인코더 %1$d개 • 활성: %2$s</string>
+    <string name="encoder_detail_none">호환되는 MediaCodec 비디오 인코더를 찾지 못했습니다.</string>
+    <string name="encoder_detail_hw">HW 가속 (%1$s)</string>
+    <string name="encoder_detail_sw">SW 폴백</string>
+    <string name="encoder_detail_count">감지된 기기 HW: %1$d개 (전체 %2$d개)</string>
+    <string name="paired_pc_format">연결된 PC: %1$s (토큰: %2$s…)</string>
+    <string name="lang_korean">한국어 (Korean)</string>
+    <string name="lang_english">English</string>
+</resources>

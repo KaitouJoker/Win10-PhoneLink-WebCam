@@ -77,8 +77,16 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     private var selectedBitrate: BitratePreset = BitratePreset.MBPS_20
     private var selectedRotation: RotationMode = RotationMode.AUTO
 
+    private data class LabeledOption<T>(val value: T, val label: String) {
+        override fun toString(): String = label
+    }
+
     private var suppressSpinnerEvents: Boolean = true
     private var latestState: StreamConnectionState = StreamConnectionState.IDLE
+
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(LocaleHelper.wrapContext(newBase))
+    }
 
     private var streamService: CameraStreamService? = null
     private var isServiceBound: Boolean = false
@@ -182,7 +190,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
             val hwCount = allEncoders.count { it.isHardware }
             Toast.makeText(
                 this,
-                "감지된 HW 가속 인코더 ${hwCount}개 • 활성: ${selectedEncoder?.codecName ?: "-"}",
+                getString(R.string.toast_hw_summary, hwCount, selectedEncoder?.codecName ?: "-"),
                 Toast.LENGTH_SHORT
             ).show()
         }
@@ -292,11 +300,15 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
 
         binding.btnRequestSync.setOnClickListener {
             streamService?.requestSyncFrame()
-            Toast.makeText(this, "Requested IDR keyframe", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, R.string.toast_idr_requested, Toast.LENGTH_SHORT).show()
         }
 
         binding.btnSelectHwEncoder.setOnClickListener {
             showHwAccelerationSelectorDialog(isStartup = false)
+        }
+
+        binding.btnOpenSettings.setOnClickListener {
+            showAppSettingsDialog()
         }
     }
 
@@ -337,8 +349,16 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
             binding.spinnerLens.setSelection(lensIdx, false)
         }
 
+        val isKorean = LocaleHelper.isKorean(this)
         val codecValues = CodecFamily.values().toList()
-        binding.spinnerCodec.adapter = makeSpinnerAdapter(codecValues)
+        val codecOptions = codecValues.map { family ->
+            val label = when (family) {
+                CodecFamily.H264 -> if (isKorean) "H.264 / AVC (저지연 권장)" else "H.264 / AVC (Low Latency)"
+                CodecFamily.HEVC -> if (isKorean) "HEVC / H.265 (고효율 압축)" else "HEVC / H.265 (High Efficiency)"
+            }
+            LabeledOption(family, label)
+        }
+        binding.spinnerCodec.adapter = makeSpinnerAdapter(codecOptions)
         binding.spinnerCodec.setSelection(codecValues.indexOf(selectedCodec), false)
 
         refilterEncoderSpinner(preferredCodecName = savedEncoderName)
@@ -356,10 +376,35 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         binding.spinnerBitrate.setSelection(bitrateValues.indexOf(selectedBitrate), false)
 
         val rotValues = RotationMode.values().toList()
-        binding.spinnerRotation.adapter = makeSpinnerAdapter(rotValues)
+        val rotOptions = rotValues.map { mode ->
+            val label = if (isKorean) {
+                when (mode) {
+                    RotationMode.AUTO -> "자동 (센서)"
+                    RotationMode.DEG_0 -> "0° (가로)"
+                    RotationMode.DEG_90 -> "90° (세로)"
+                    RotationMode.DEG_180 -> "180°"
+                    RotationMode.DEG_270 -> "270°"
+                }
+            } else {
+                mode.label
+            }
+            LabeledOption(mode, label)
+        }
+        binding.spinnerRotation.adapter = makeSpinnerAdapter(rotOptions)
         binding.spinnerRotation.setSelection(rotValues.indexOf(selectedRotation), false)
 
-        attachSpinnerListeners(codecValues, resValues, fpsValues, bitrateValues, rotValues)
+        val langValues = listOf(
+            LabeledOption(LocaleHelper.LANG_KO, getString(R.string.lang_korean)),
+            LabeledOption(LocaleHelper.LANG_EN, getString(R.string.lang_english))
+        )
+        val activeLang = LocaleHelper.getLanguage(this)
+        binding.spinnerLanguage.adapter = makeSpinnerAdapter(langValues)
+        binding.spinnerLanguage.setSelection(
+            langValues.indexOfFirst { it.value == activeLang }.coerceAtLeast(0),
+            false
+        )
+
+        attachSpinnerListeners(codecValues, resValues, fpsValues, bitrateValues, rotValues, langValues.map { it.value })
 
         binding.root.post { suppressSpinnerEvents = false }
     }
@@ -426,7 +471,8 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         resValues: List<ResolutionPreset>,
         fpsValues: List<FpsPreset>,
         bitrateValues: List<BitratePreset>,
-        rotValues: List<RotationMode>
+        rotValues: List<RotationMode>,
+        langValues: List<String>
     ) {
         binding.spinnerLens.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
@@ -530,17 +576,68 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
 
             override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
+
+        binding.spinnerLanguage.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                if (suppressSpinnerEvents || pos !in langValues.indices) return
+                val nextLang = langValues[pos]
+                if (nextLang != LocaleHelper.getLanguage(this@MainActivity)) {
+                    switchAppLanguage(nextLang)
+                }
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+    }
+
+    private fun switchAppLanguage(langCode: String) {
+        LocaleHelper.setLanguage(this, langCode)
+        suppressSpinnerEvents = true
+        recreate()
+    }
+
+    private fun showAppSettingsDialog() {
+        val options = arrayOf(
+            getString(R.string.lang_korean),
+            getString(R.string.lang_english)
+        )
+        val codes = arrayOf(LocaleHelper.LANG_KO, LocaleHelper.LANG_EN)
+        val currentCode = LocaleHelper.getLanguage(this)
+        var chosenIdx = codes.indexOf(currentCode).coerceAtLeast(0)
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.settings_dialog_title)
+            .setSingleChoiceItems(options, chosenIdx) { _, which ->
+                chosenIdx = which
+            }
+            .setNeutralButton(R.string.settings_hw_encoder_item) { _, _ ->
+                showHwAccelerationSelectorDialog(isStartup = false)
+            }
+            .setPositiveButton(R.string.btn_apply) { _, _ ->
+                val nextCode = codes[chosenIdx]
+                if (nextCode != currentCode) {
+                    switchAppLanguage(nextCode)
+                }
+            }
+            .setNegativeButton(R.string.btn_close, null)
+            .show()
     }
 
     private fun updateEncoderDetailText() {
         val enc = selectedEncoder
         if (enc == null) {
-            binding.textEncoderDetail.text = "호환되는 MediaCodec 비디오 인코더를 찾지 못했습니다."
+            binding.textEncoderDetail.setText(R.string.encoder_detail_none)
             return
         }
         val hwCount = allEncoders.count { it.isHardware }
         val modeDesc = buildString {
-            append(if (enc.isHardware) "HW 가속 (${enc.vendorLabel})" else "SW 폴백")
+            append(
+                if (enc.isHardware) {
+                    getString(R.string.encoder_detail_hw, enc.vendorLabel)
+                } else {
+                    getString(R.string.encoder_detail_sw)
+                }
+            )
             append(" • ${enc.mimeType}")
             append(
                 when {
@@ -550,7 +647,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
                 }
             )
             if (enc.supports1080p60) append(" • 1080p60")
-            append(" • 감지된 기기 HW: ${hwCount}개 (전체 ${allEncoders.size}개)")
+            append(" • ${getString(R.string.encoder_detail_count, hwCount, allEncoders.size)}")
         }
         binding.textEncoderDetail.text = modeDesc
     }
@@ -558,18 +655,23 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     private fun showHwAccelerationSelectorDialog(isStartup: Boolean) {
         val candidates = VideoEncoderCatalog.discoverHardwareEncoders()
         if (candidates.isEmpty()) {
-            Toast.makeText(this, "사용 가능한 비디오 인코더를 찾지 못했습니다.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, R.string.toast_no_encoders, Toast.LENGTH_LONG).show()
             return
         }
 
+        val isKorean = LocaleHelper.isKorean(this)
         val labels = candidates.map { opt ->
-            val hwTag = if (opt.isHardware) "HW (${opt.vendorLabel})" else "SW 폴백"
+            val hwTag = if (opt.isHardware) "HW (${opt.vendorLabel})" else getString(R.string.encoder_detail_sw)
             val rc = when {
                 opt.supportsCbr -> "CBR"
                 opt.supportsVbr -> "VBR"
                 else -> "Default"
             }
-            val fpsTag = if (opt.supports1080p60) "1080p60 지원" else "기본 해상도"
+            val fpsTag = if (opt.supports1080p60) {
+                if (isKorean) "1080p60 지원" else "1080p60 Supported"
+            } else {
+                if (isKorean) "기본 해상도" else "Standard Resolution"
+            }
             "[${opt.wireCodec.uppercase()}] ${opt.codecName}\n$hwTag • $rc • $fpsTag"
         }.toTypedArray()
 
@@ -579,7 +681,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
 
         val hwCount = candidates.count { it.isHardware }
         val title = if (isStartup) {
-            "${Build.MODEL} HW 가속 인코더 (${hwCount}개 감지)"
+            getString(R.string.hw_dialog_startup_title, Build.MODEL, hwCount)
         } else {
             getString(R.string.hw_dialog_title)
         }
@@ -589,7 +691,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
             .setSingleChoiceItems(labels, chosenIdx) { _, which ->
                 chosenIdx = which
             }
-            .setPositiveButton("선택 적용") { _, _ ->
+            .setPositiveButton(R.string.btn_apply) { _, _ ->
                 val chosen = candidates[chosenIdx]
                 applyChosenEncoder(chosen)
             }
@@ -669,7 +771,11 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
             binding.textPairedTarget.text = getString(R.string.no_pc_paired)
             binding.textPairedTarget.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
         } else {
-            binding.textPairedTarget.text = "Paired PC: ${pairing.toDisplaySummary()} (Token: ${pairing.token.take(4)}…)"
+            binding.textPairedTarget.text = getString(
+                R.string.paired_pc_format,
+                pairing.toDisplaySummary(),
+                pairing.token.take(4)
+            )
             binding.textPairedTarget.setTextColor(ContextCompat.getColor(this, R.color.text_primary))
         }
     }
@@ -689,7 +795,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         val lens = selectedLens ?: lensOptions.firstOrNull()
         val encoder = selectedEncoder ?: encoderOptions.firstOrNull()
         if (lens == null || encoder == null) {
-            Toast.makeText(this, "Missing camera lens or video encoder.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, R.string.toast_missing_lens_encoder, Toast.LENGTH_LONG).show()
             return
         }
 

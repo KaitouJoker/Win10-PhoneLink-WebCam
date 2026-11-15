@@ -12,21 +12,30 @@
     <string name="no_pc_paired">No PC paired yet. Scan QR code or enter PC IP.</string>
     <string name="btn_scan_qr">Scan QR</string>
     <string name="btn_manual_ip">Manual IP</string>
+    <string name="btn_settings">Settings</string>
     <string name="btn_start_stream">Start Streaming</string>
     <string name="btn_stop_stream">Stop Streaming</string>
     <string name="btn_sync_idr">IDR</string>
     <string name="btn_grant_camera">Grant Camera Permission</string>
 
-    <string name="section_stream_settings">스트리밍 설정 (해상도 / 코덱 / 인코더 장치)</string>
+    <string name="section_stream_settings">Stream Settings (Resolution / Codec / Encoder)</string>
     <string name="label_camera_lens">Camera Lens</string>
-    <string name="label_codec">코덱 설정 (Video Codec)</string>
-    <string name="label_encoder">인코더 장치 설정 (Hardware Encoder)</string>
-    <string name="btn_select_hw_encoder">장치 지원 HW 가속 목록 확인 / 선택</string>
-    <string name="hw_dialog_title">장치 지원 HW 가속 인코더 선택</string>
-    <string name="label_resolution">해상도 설정 (Resolution)</string>
+    <string name="label_codec">Video Codec</string>
+    <string name="label_encoder">Hardware Encoder</string>
+    <string name="btn_select_hw_encoder">Inspect / Select HW Encoders</string>
+    <string name="hw_dialog_title">Select Supported HW Accelerator</string>
+    <string name="hw_dialog_startup_title">%1$s HW Encoders (%2$d detected)</string>
+    <string name="label_resolution">Resolution</string>
     <string name="label_fps">Frame Rate</string>
     <string name="label_bitrate">Bitrate</string>
     <string name="label_rotation">Orientation</string>
+    <string name="label_language">Language</string>
+
+    <string name="settings_dialog_title">App Settings</string>
+    <string name="settings_language_label">Display Language (Auto-detects OS locale on first launch)</string>
+    <string name="settings_hw_encoder_item">Inspect / Select HW Accelerators</string>
+    <string name="btn_apply">Apply</string>
+    <string name="btn_close">Close</string>
 
     <string name="manual_dialog_title">Manual PC Connection</string>
     <string name="hint_pc_ip">PC LAN IP (or 127.0.0.1 for ADB)</string>
@@ -48,4 +57,16 @@
     <string name="notif_title">Streaming Webcam to Windows 10</string>
     <string name="notif_stop_action">Stop</string>
     <string name="preview_placeholder">Camera preview appears here once permission is granted.</string>
+
+    <string name="toast_idr_requested">Requested IDR keyframe</string>
+    <string name="toast_missing_lens_encoder">Missing camera lens or video encoder.</string>
+    <string name="toast_no_encoders">No compatible video encoder found.</string>
+    <string name="toast_hw_summary">Detected %1$d HW encoders • Active: %2$s</string>
+    <string name="encoder_detail_none">No compatible MediaCodec video encoder found.</string>
+    <string name="encoder_detail_hw">HW Accel (%1$s)</string>
+    <string name="encoder_detail_sw">SW Fallback</string>
+    <string name="encoder_detail_count">Detected HW: %1$d (Total %2$d)</string>
+    <string name="paired_pc_format">Paired PC: %1$s (Token: %2$s…)</string>
+    <string name="lang_korean">한국어 (Korean)</string>
+    <string name="lang_english">English</string>
 </resources>

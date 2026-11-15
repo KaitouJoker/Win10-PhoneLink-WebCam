@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
+using System.Globalization;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
@@ -47,8 +48,9 @@ public enum PacketType : byte
     Heartbeat = 3,
 }
 
-public sealed record ResolutionOption(string Id, int Width, int Height, string Label)
+public sealed record ResolutionOption(string Id, int Width, int Height, string Label, string LabelEn = "")
 {
+    public string GetLabel(bool isKorean) => isKorean || string.IsNullOrEmpty(LabelEn) ? Label : LabelEn;
     public override string ToString() => Label;
 }
 
@@ -67,6 +69,21 @@ public sealed class ReceiverSettings
     public bool PreviewEnabled { get; set; } = true;
     public bool FlipHorizontal { get; set; } = false;
     public bool FlipVertical { get; set; } = false;
+    public string Language { get; set; } = string.Empty;
+
+    [JsonIgnore]
+    public bool IsKorean => string.Equals(NormalizeLanguage(Language), "ko", StringComparison.OrdinalIgnoreCase);
+
+    public static string DetectSystemLanguage() =>
+        CultureInfo.CurrentUICulture.TwoLetterISOLanguageName.Equals("ko", StringComparison.OrdinalIgnoreCase)
+            ? "ko"
+            : "en";
+
+    public static string NormalizeLanguage(string? lang)
+    {
+        if (string.IsNullOrWhiteSpace(lang)) return DetectSystemLanguage();
+        return lang.Trim().StartsWith("ko", StringComparison.OrdinalIgnoreCase) ? "ko" : "en";
+    }
 
     private static string SettingsFilePath => Path.Combine(AppContext.BaseDirectory, "settings.json");
 
@@ -82,6 +99,7 @@ public sealed class ReceiverSettings
                 if (loaded != null)
                 {
                     if (loaded.Port is < 1024 or > 65535) loaded.Port = Protocol.DefaultPort;
+                    loaded.Language = NormalizeLanguage(loaded.Language);
                     return loaded;
                 }
             }
@@ -89,7 +107,7 @@ public sealed class ReceiverSettings
         catch
         {
         }
-        return new ReceiverSettings();
+        return new ReceiverSettings { Language = DetectSystemLanguage() };
     }
 
     public void Save()
@@ -212,12 +230,12 @@ public static class Protocol
 
     public static readonly IReadOnlyList<ResolutionOption> ResolutionPresets =
     [
-        new("1280x720", 1280, 720, "1280×720 (HD 720p - 권장)"),
-        new("1920x1080", 1920, 1080, "1920×1080 (Full HD 1080p)"),
-        new("960x540", 960, 540, "960×540 (qHD 540p)"),
-        new("640x480", 640, 480, "640×480 (VGA 480p)"),
-        new("640x360", 640, 360, "640×360 (nHD 360p)"),
-        new("auto", 0, 0, "Auto (휴대폰 전송 원본 해상도 유지)"),
+        new("1280x720", 1280, 720, "1280×720 (HD 720p - 권장)", "1280×720 (HD 720p - Recommended)"),
+        new("1920x1080", 1920, 1080, "1920×1080 (Full HD 1080p)", "1920×1080 (Full HD 1080p)"),
+        new("960x540", 960, 540, "960×540 (qHD 540p)", "960×540 (qHD 540p)"),
+        new("640x480", 640, 480, "640×480 (VGA 480p)", "640×480 (VGA 480p)"),
+        new("640x360", 640, 360, "640×360 (nHD 360p)", "640×360 (nHD 360p)"),
+        new("auto", 0, 0, "Auto (휴대폰 전송 원본 해상도 유지)", "Auto (Keep Phone Source Resolution)"),
     ];
 
     public static ResolutionOption FindResolutionOption(string? id)
@@ -321,7 +339,7 @@ public static class Protocol
         };
     }
 
-    public static List<GpuDeviceOption> EnumerateGpuDevices()
+    public static List<GpuDeviceOption> EnumerateGpuDevices(bool isKorean = true)
     {
         var list = new List<GpuDeviceOption>();
         try
@@ -363,7 +381,10 @@ public static class Protocol
             }
         }
 
-        list.Add(new GpuDeviceOption(-1, "Auto (시스템 기본 GPU 장치 자동 선택)", list.Any(x => x.IsCudaCapable)));
+        list.Add(new GpuDeviceOption(
+            -1,
+            isKorean ? "Auto (시스템 기본 GPU 장치 자동 선택)" : "Auto (System Default GPU Device)",
+            list.Any(x => x.IsCudaCapable)));
         return list;
     }
 

@@ -20,6 +20,7 @@ import android.view.Surface
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import com.win10phonelink.webcam.LocaleHelper
 import com.win10phonelink.webcam.MainActivity
 import com.win10phonelink.webcam.R
 import com.win10phonelink.webcam.camera.CameraLensCatalog
@@ -42,6 +43,10 @@ class CameraStreamService : Service() {
 
     inner class LocalBinder : Binder() {
         fun getService(): CameraStreamService = this@CameraStreamService
+    }
+
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(LocaleHelper.wrapContext(newBase))
     }
 
     private data class ActiveConfig(

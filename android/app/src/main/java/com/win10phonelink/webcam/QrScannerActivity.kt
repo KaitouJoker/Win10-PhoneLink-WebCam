@@ -1,6 +1,7 @@
 package com.win10phonelink.webcam
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -39,6 +40,10 @@ class QrScannerActivity : AppCompatActivity() {
 
     private val scanHandled = AtomicBoolean(false)
     private var lastInvalidToastMs: Long = 0L
+
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(LocaleHelper.wrapContext(newBase))
+    }
 
     private val cameraPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
