@@ -352,6 +352,10 @@ class CameraStreamService : Service() {
                         _telemetry.update { it.copy(rotationDegrees = rotationDegrees) }
                     }
 
+                    override fun onCaptureModeChanged(modeLabel: String) {
+                        _telemetry.update { it.copy(captureFpsMode = modeLabel) }
+                    }
+
                     override fun onError(message: String) {
                         mainHandler.post {
                             lastStatusErrorResId = null

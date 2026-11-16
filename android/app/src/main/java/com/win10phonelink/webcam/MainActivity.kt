@@ -1041,7 +1041,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         if (telemetry.state == StreamConnectionState.STREAMING) {
             val mbps = telemetry.bitrateKbps / 1000.0
             binding.textTelemetryOverlay.visibility = View.VISIBLE
-            binding.textTelemetryOverlay.text = String.format(
+            val baseStats = String.format(
                 Locale.US,
                 "%dx%d • %.1f fps • %.2f Mbps • %s • Rot %d° • Drop %d",
                 telemetry.width,
@@ -1052,6 +1052,11 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
                 telemetry.rotationDegrees,
                 telemetry.droppedPackets
             )
+            binding.textTelemetryOverlay.text = if (telemetry.captureFpsMode.isNotBlank()) {
+                "$baseStats • ${telemetry.captureFpsMode}"
+            } else {
+                baseStats
+            }
         } else if (telemetry.state == StreamConnectionState.ERROR ||
             telemetry.state == StreamConnectionState.RECONNECTING ||
             telemetry.state == StreamConnectionState.CONNECTING

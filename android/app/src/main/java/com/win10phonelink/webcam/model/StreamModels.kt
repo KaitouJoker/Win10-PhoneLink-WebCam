@@ -138,5 +138,6 @@ data class StreamTelemetry(
     val width: Int = 1280,
     val height: Int = 720,
     val packetsSent: Long = 0L,
-    val droppedPackets: Long = 0L
+    val droppedPackets: Long = 0L,
+    val captureFpsMode: String = ""
 )
