@@ -155,10 +155,13 @@ public:
     std::vector<AM_MEDIA_TYPE*> BuildMediaTypeList() const;
 
 private:
+    std::vector<VideoCapEntry> BuildCapList() const;
+    static bool PreferredMtMatchesCaps(const AM_MEDIA_TYPE& mt, const std::vector<VideoCapEntry>& caps);
     HRESULT CheckMediaType(const AM_MEDIA_TYPE* pmt) const;
     bool MatchesPartialMediaType(const AM_MEDIA_TYPE* partial, const AM_MEDIA_TYPE* candidate) const;
     HRESULT AttemptConnect(IPin* pReceivePin, const AM_MEDIA_TYPE* pmt);
     static bool ExtractTargetFormatDesc(const AM_MEDIA_TYPE* pmt, TargetFormatDesc& outDesc, REFERENCE_TIME& outInterval);
+    static AM_MEDIA_TYPE* CreateMediaTypeFromParams(TargetFormat fmt, uint32_t width, uint32_t height, bool bottomUp, REFERENCE_TIME interval);
     static AM_MEDIA_TYPE* CreateMediaTypeFromCap(const VideoCapEntry& cap);
 
     void StreamThreadProc();
@@ -172,6 +175,7 @@ private:
     CVcamFilter* m_filter = nullptr;
 
     mutable std::recursive_mutex m_pinLock;
+    mutable std::vector<VideoCapEntry> m_cachedCaps;
     ComPtr<IPin> m_connectedPin;
     ComPtr<IMemInputPin> m_inputPin;
     ComPtr<IMemAllocator> m_allocator;

@@ -155,7 +155,14 @@ public sealed class MainForm : Form
             flipHorizontal: _settings.FlipHorizontal,
             flipVertical: _settings.FlipVertical);
         _shm.SetFlipFlags(_settings.FlipHorizontal, _settings.FlipVertical, preApplied: true, persistToRegistry: true);
+        (int standbyW, int standbyH) = Protocol.ComputeStandbyTargetSize(selectedRes.Width, selectedRes.Height, _settings.LastIsPortrait);
+        _shm.SetOrientationHint(
+            _settings.LastIsPortrait ? ShmOrientationHint.Portrait : ShmOrientationHint.Landscape,
+            standbyW,
+            standbyH,
+            persistToRegistry: true);
         _server.FrameAvailable += OnFrameAvailable;
+        _server.OrientationChanged += OnStreamOrientationChanged;
 
         var root = new TableLayoutPanel
         {
@@ -679,6 +686,7 @@ public sealed class MainForm : Form
         {
             _uiTimer.Stop();
             _server.FrameAvailable -= OnFrameAvailable;
+            _server.OrientationChanged -= OnStreamOrientationChanged;
             _server.Dispose();
             _shm.Dispose();
             _previewMenu.Dispose();
@@ -936,6 +944,15 @@ public sealed class MainForm : Form
         _server.SetCodecPreference(codec);
         _server.SetDecoderConfig(decoder, gpu.DeviceIndex, gpu.Name);
         _server.SetFlip(_settings.FlipHorizontal, _settings.FlipVertical, persistToRegistry: true);
+        if (!_server.GetTelemetry().Connected)
+        {
+            (int standbyW, int standbyH) = Protocol.ComputeStandbyTargetSize(res.Width, res.Height, _settings.LastIsPortrait);
+            _shm.SetOrientationHint(
+                _settings.LastIsPortrait ? ShmOrientationHint.Portrait : ShmOrientationHint.Landscape,
+                standbyW,
+                standbyH,
+                persistToRegistry: true);
+        }
 
         if (languageChanged)
         {
@@ -1168,6 +1185,31 @@ public sealed class MainForm : Form
                 ? T("미등록 (DLL 준비됨)", "Not Registered (DLL Ready)")
                 : T("미등록 (DLL 없음)", "Not Registered (DLL Missing)");
             _vcamStatusLabel.ForeColor = Color.Orange;
+        }
+    }
+
+    private void OnStreamOrientationChanged(bool isPortrait)
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+        try
+        {
+            BeginInvoke(() =>
+            {
+                if (IsDisposed) return;
+                if (_settings.LastIsPortrait != isPortrait)
+                {
+                    _settings.LastIsPortrait = isPortrait;
+                    _settings.Save();
+                }
+                ShmWriter.PersistOrientationToRegistry(isPortrait);
+                AppendLog($"[Stream] Orientation changed: {(isPortrait ? "Portrait" : "Landscape")}");
+            });
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (InvalidOperationException)
+        {
         }
     }
 

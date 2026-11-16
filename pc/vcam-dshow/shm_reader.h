@@ -31,6 +31,17 @@ struct ShmFrameSnapshot {
     size_t dataSize = 0;
 };
 
+struct ShmStreamHint {
+    bool shmOpen = false;
+    bool producerAlive = false;
+    ShmReadStatus status = ShmReadStatus::Disconnected;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint8_t orientationHint = 0;
+    uint32_t prefWidth = 0;
+    uint32_t prefHeight = 0;
+};
+
 class ShmReader {
 public:
     ShmReader() = default;
@@ -41,6 +52,8 @@ public:
 
     void Close();
     ShmReadStatus ReadLatest(ShmFrameSnapshot& outSnapshot);
+    static ShmStreamHint ProbeStreamHint();
+    static uint8_t ReadRegistryOrientationHint();
 
 private:
     bool EnsureOpen();

@@ -22,6 +22,13 @@ public unsafe struct ShmHeader
     [FieldOffset(52)] public fixed byte Reserved[12];
 }
 
+public enum ShmOrientationHint : byte
+{
+    Unspecified = 0,
+    Landscape = 1,
+    Portrait = 2,
+}
+
 /// <summary>
 /// Lock-free triple-buffered producer for Local\PhoneLinkCam_Shm and Local\PhoneLinkCam_Event.
 /// </summary>
@@ -33,6 +40,7 @@ public sealed unsafe class ShmWriter : IDisposable
     public const uint ShmVersion = 1u;
     public const int MaxWidth = 1920;
     public const int MaxHeight = 1080;
+    public const int MaxDimension = 1920;
     public const int SlotCount = 3;
     public const int HeaderSize = 64;
     public const int SlotSize = MaxWidth * MaxHeight * 4; // 8,294,400 bytes
@@ -43,6 +51,7 @@ public sealed unsafe class ShmWriter : IDisposable
     public const byte FlipPreApplied = 0x80;
     private const string FlipRegistryKey = @"HKEY_CURRENT_USER\Software\Win10PhoneLinkWebCam";
     private const string FlipRegistryValue = "FlipFlags";
+    private const string OrientationRegistryValue = "OrientationHint";
 
     private readonly object _writeLock = new();
     private readonly MemoryMappedFile _mmf;
@@ -52,6 +61,9 @@ public sealed unsafe class ShmWriter : IDisposable
     private ulong _writeSeq;
     private uint _activeSlot;
     private byte _flipFlags;
+    private ShmOrientationHint _orientationHint;
+    private ushort _prefWidth;
+    private ushort _prefHeight;
     private bool _disposed;
 
     public ShmWriter()
@@ -107,9 +119,67 @@ public sealed unsafe class ShmWriter : IDisposable
             {
                 hdr->Reserved[i] = 0;
             }
-            hdr->Reserved[0] = _flipFlags;
+            WriteReservedLocked(hdr);
             Thread.MemoryBarrier();
             Volatile.Write(ref hdr->WriteSeq, _writeSeq);
+        }
+    }
+
+    private void WriteReservedLocked(ShmHeader* hdr)
+    {
+        hdr->Reserved[0] = _flipFlags;
+        hdr->Reserved[1] = (byte)_orientationHint;
+        hdr->Reserved[2] = (byte)(_prefWidth & 0xFF);
+        hdr->Reserved[3] = (byte)((_prefWidth >> 8) & 0xFF);
+        hdr->Reserved[4] = (byte)(_prefHeight & 0xFF);
+        hdr->Reserved[5] = (byte)((_prefHeight >> 8) & 0xFF);
+    }
+
+    public static void PersistOrientationToRegistry(bool isPortrait)
+    {
+        try
+        {
+            var hint = isPortrait ? ShmOrientationHint.Portrait : ShmOrientationHint.Landscape;
+            Registry.SetValue(FlipRegistryKey, OrientationRegistryValue, (int)hint, RegistryValueKind.DWord);
+        }
+        catch
+        {
+        }
+    }
+
+    public void SetOrientationHint(ShmOrientationHint hint, int preferredWidth = 0, int preferredHeight = 0, bool persistToRegistry = true)
+    {
+        ushort pw = (ushort)Math.Clamp(preferredWidth, 0, ushort.MaxValue);
+        ushort ph = (ushort)Math.Clamp(preferredHeight, 0, ushort.MaxValue);
+
+        if (persistToRegistry)
+        {
+            try
+            {
+                Registry.SetValue(FlipRegistryKey, OrientationRegistryValue, (int)hint, RegistryValueKind.DWord);
+            }
+            catch
+            {
+            }
+        }
+
+        lock (_writeLock)
+        {
+            bool changed = _orientationHint != hint || _prefWidth != pw || _prefHeight != ph;
+            _orientationHint = hint;
+            _prefWidth = pw;
+            _prefHeight = ph;
+            if (_disposed || _basePtr == null) return;
+
+            var hdr = (ShmHeader*)_basePtr;
+            if (changed || hdr->Reserved[1] != (byte)hint)
+            {
+                WriteReservedLocked(hdr);
+                hdr->Timestamp100Ns = GetQpcTimestamp100Ns();
+                Thread.MemoryBarrier();
+                _writeSeq++;
+                Volatile.Write(ref hdr->WriteSeq, _writeSeq);
+            }
         }
     }
 
@@ -140,7 +210,7 @@ public sealed unsafe class ShmWriter : IDisposable
             var hdr = (ShmHeader*)_basePtr;
             if (hdr->Reserved[0] != flags)
             {
-                hdr->Reserved[0] = flags;
+                WriteReservedLocked(hdr);
                 hdr->Timestamp100Ns = GetQpcTimestamp100Ns();
                 Thread.MemoryBarrier();
                 _writeSeq++;
@@ -151,17 +221,18 @@ public sealed unsafe class ShmWriter : IDisposable
 
     public void WriteBgra32Frame(ReadOnlySpan<byte> frameBytes, int width, int height, FrameState state = FrameState.Live)
     {
-        if (width <= 0 || height <= 0 || width > MaxWidth || height > MaxHeight)
+        if (width <= 0 || height <= 0 || width > MaxDimension || height > MaxDimension)
         {
-            throw new ArgumentOutOfRangeException(nameof(width), $"Frame dimensions {width}x{height} exceed {MaxWidth}x{MaxHeight}");
+            throw new ArgumentOutOfRangeException(nameof(width), $"Frame dimensions {width}x{height} exceed {MaxDimension}x{MaxDimension}");
         }
 
         int stride = width * 4;
-        int required = stride * height;
-        if (required > SlotSize || frameBytes.Length < required)
+        long requiredLong = (long)stride * height;
+        if (requiredLong > SlotSize || frameBytes.Length < requiredLong)
         {
-            throw new ArgumentException($"Invalid frame byte length {frameBytes.Length} for {width}x{height} BGRA32", nameof(frameBytes));
+            throw new ArgumentException($"Invalid frame byte length {frameBytes.Length} for {width}x{height} BGRA32 (slot={SlotSize})", nameof(frameBytes));
         }
+        int required = (int)requiredLong;
 
         lock (_writeLock)
         {
@@ -178,6 +249,10 @@ public sealed unsafe class ShmWriter : IDisposable
             // Publish slot pixels before updating header fields and write_seq.
             Thread.MemoryBarrier();
 
+            _orientationHint = height > width ? ShmOrientationHint.Portrait : ShmOrientationHint.Landscape;
+            _prefWidth = (ushort)Math.Clamp(width, 0, ushort.MaxValue);
+            _prefHeight = (ushort)Math.Clamp(height, 0, ushort.MaxValue);
+
             var hdr = (ShmHeader*)_basePtr;
             hdr->Magic = ShmMagic;
             hdr->Version = ShmVersion;
@@ -189,7 +264,7 @@ public sealed unsafe class ShmWriter : IDisposable
             hdr->Stride = (uint)stride;
             hdr->Timestamp100Ns = GetQpcTimestamp100Ns();
             hdr->PayloadSize = (uint)required;
-            hdr->Reserved[0] = _flipFlags;
+            WriteReservedLocked(hdr);
 
             Thread.MemoryBarrier();
             _activeSlot = nextSlot;
@@ -212,7 +287,7 @@ public sealed unsafe class ShmWriter : IDisposable
             hdr->Version = ShmVersion;
             hdr->FrameState = (uint)state;
             hdr->Timestamp100Ns = GetQpcTimestamp100Ns();
-            hdr->Reserved[0] = _flipFlags;
+            WriteReservedLocked(hdr);
             Thread.MemoryBarrier();
             _writeSeq++;
             Volatile.Write(ref hdr->WriteSeq, _writeSeq);

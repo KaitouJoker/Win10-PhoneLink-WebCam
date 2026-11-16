@@ -25,7 +25,9 @@ inline void ReadHeaderVolatile(const uint8_t* base, phonelink_cam::ShmHeader& ou
     out.stride = VolatileLoad(&v->stride);
     out.timestamp_100ns = VolatileLoad(&v->timestamp_100ns);
     out.payload_size = VolatileLoad(&v->payload_size);
-    out.reserved[0] = VolatileLoad(&v->reserved[0]);
+    for (int i = 0; i < 6; ++i) {
+        out.reserved[i] = VolatileLoad(&v->reserved[i]);
+    }
 }
 
 } // namespace
@@ -49,6 +51,94 @@ void ShmReader::Close() {
     m_staleTicks = 0;
     m_disconnectedTicks = 0;
     m_regCacheTicks = 0;
+}
+
+uint8_t ShmReader::ReadRegistryOrientationHint() {
+    DWORD val = 0;
+    DWORD cb = sizeof(val);
+    if (RegGetValueW(
+            HKEY_CURRENT_USER,
+            L"Software\\Win10PhoneLinkWebCam",
+            L"OrientationHint",
+            RRF_RT_REG_DWORD,
+            nullptr,
+            &val,
+            &cb) == ERROR_SUCCESS) {
+        if (val == phonelink_cam::OrientationHint::kLandscape ||
+            val == phonelink_cam::OrientationHint::kPortrait) {
+            return static_cast<uint8_t>(val);
+        }
+    }
+    return phonelink_cam::OrientationHint::kUnspecified;
+}
+
+ShmStreamHint ShmReader::ProbeStreamHint() {
+    ShmStreamHint hint{};
+
+    HANDLE hEvent = OpenEventW(SYNCHRONIZE, FALSE, phonelink_cam::kShmEventName);
+    const bool eventAlive = (hEvent != nullptr);
+    if (hEvent != nullptr) {
+        CloseHandle(hEvent);
+    }
+    hint.producerAlive = eventAlive;
+
+    if (eventAlive) {
+        HANDLE hMap = OpenFileMappingW(FILE_MAP_READ, FALSE, phonelink_cam::kShmMappingName);
+        if (hMap != nullptr) {
+            const void* view = MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, phonelink_cam::kShmHeaderSize);
+            if (view != nullptr) {
+                const auto* base = static_cast<const uint8_t*>(view);
+                for (int attempt = 0; attempt < 3; ++attempt) {
+                    const uint64_t seq1 = VolatileLoad(
+                        reinterpret_cast<const volatile uint64_t*>(base + offsetof(phonelink_cam::ShmHeader, write_seq)));
+                    std::atomic_thread_fence(std::memory_order_acquire);
+
+                    phonelink_cam::ShmHeader hdr{};
+                    ReadHeaderVolatile(base, hdr);
+
+                    std::atomic_thread_fence(std::memory_order_acquire);
+                    const uint64_t seq2 = VolatileLoad(
+                        reinterpret_cast<const volatile uint64_t*>(base + offsetof(phonelink_cam::ShmHeader, write_seq)));
+                    if (seq1 != seq2 || seq2 != hdr.write_seq) {
+                        continue;
+                    }
+
+                    if (hdr.magic == phonelink_cam::kShmMagic && hdr.version == phonelink_cam::kShmVersion) {
+                        hint.shmOpen = true;
+                        hint.orientationHint = hdr.reserved[1];
+                        hint.prefWidth = static_cast<uint32_t>(hdr.reserved[2]) |
+                                         (static_cast<uint32_t>(hdr.reserved[3]) << 8);
+                        hint.prefHeight = static_cast<uint32_t>(hdr.reserved[4]) |
+                                          (static_cast<uint32_t>(hdr.reserved[5]) << 8);
+
+                        const auto state = static_cast<phonelink_cam::FrameState>(hdr.frame_state);
+                        if (state == phonelink_cam::FrameState::Live && hdr.write_seq > 0) {
+                            uint32_t stride = 0;
+                            size_t reqBytes = 0;
+                            if (ComputeLayout(hdr, stride, reqBytes)) {
+                                hint.status = ShmReadStatus::Live;
+                                hint.width = hdr.width;
+                                hint.height = hdr.height;
+                                hint.orientationHint = (hdr.height > hdr.width)
+                                    ? phonelink_cam::OrientationHint::kPortrait
+                                    : phonelink_cam::OrientationHint::kLandscape;
+                            }
+                        } else if (state == phonelink_cam::FrameState::Paused) {
+                            hint.status = ShmReadStatus::Paused;
+                        }
+                    }
+                    break;
+                }
+                UnmapViewOfFile(view);
+            }
+            CloseHandle(hMap);
+        }
+    }
+
+    if (hint.orientationHint == phonelink_cam::OrientationHint::kUnspecified) {
+        hint.orientationHint = ReadRegistryOrientationHint();
+    }
+    return hint;
 }
 
 uint8_t ShmReader::ReadRegistryFlipFlags() {
@@ -127,8 +217,8 @@ bool ShmReader::ComputeLayout(
     // Allow both landscape (up to 1920x1080) and portrait (e.g. 1080x1920 or 720x1280)
     // as long as the frame fits within the 8,294,400-byte slot.
     if (hdr.width == 0 || hdr.height == 0 ||
-        hdr.width > phonelink_cam::kMaxFrameWidth ||
-        hdr.height > phonelink_cam::kMaxFrameWidth) {
+        hdr.width > phonelink_cam::kMaxFrameDimension ||
+        hdr.height > phonelink_cam::kMaxFrameDimension) {
         return false;
     }
 

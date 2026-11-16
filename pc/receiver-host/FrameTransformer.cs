@@ -6,7 +6,8 @@ using System.Threading.Tasks;
 namespace PhoneCamReceiver;
 
 /// <summary>
-/// Normalizes BGRA32 / NV12 frames (rotation 0/90/180/270 and clamping within 1920x1080 SHM limits)
+/// Normalizes BGRA32 / NV12 frames (rotation 0/90/180/270 and clamping within SHM limits
+/// in either landscape or portrait orientation without adding letterbox/pillarbox bars)
 /// and copies them into WinForms preview bitmaps.
 /// </summary>
 public static unsafe class FrameTransformer
@@ -22,6 +23,13 @@ public static unsafe class FrameTransformer
         int OffX,
         int OffY);
 
+    private static bool FitsWithinShm(int w, int h) =>
+        w > 0 &&
+        h > 0 &&
+        w <= ShmWriter.MaxDimension &&
+        h <= ShmWriter.MaxDimension &&
+        (long)w * h * 4L <= ShmWriter.SlotSize;
+
     private static TransformLayout ComputeLayout(
         int srcW,
         int srcH,
@@ -33,11 +41,25 @@ public static unsafe class FrameTransformer
         out bool isIdentity)
     {
         int rot = ((rotationQuarterTurns % 4) + 4) % 4;
-        bool hasExplicitTarget = targetWidth > 0 && targetHeight > 0;
-        bool fitsDirectly = srcW <= ShmWriter.MaxWidth && srcH <= ShmWriter.MaxHeight;
+        int orientedW = (rot == 1 || rot == 3) ? srcH : srcW;
+        int orientedH = (rot == 1 || rot == 3) ? srcW : srcH;
+        bool isPortrait = orientedH > orientedW;
 
+        bool hasExplicitTarget = targetWidth > 0 && targetHeight > 0;
+        int effTargetW = 0;
+        int effTargetH = 0;
+        if (hasExplicitTarget)
+        {
+            int rawTargetW = isPortrait ? Math.Min(targetWidth, targetHeight) : Math.Max(targetWidth, targetHeight);
+            int rawTargetH = isPortrait ? Math.Max(targetWidth, targetHeight) : Math.Min(targetWidth, targetHeight);
+            FitWithinMax(rawTargetW, rawTargetH, out effTargetW, out effTargetH);
+        }
+
+        bool fitsDirectly = FitsWithinShm(orientedW, orientedH);
         isIdentity = rot == 0 && !flipHorizontal && !flipVertical && fitsDirectly &&
-                     (!hasExplicitTarget || (srcW == targetWidth && srcH == targetHeight));
+                     (orientedW & 1) == 0 && (orientedH & 1) == 0 &&
+                     (!hasExplicitTarget || (orientedW == effTargetW && orientedH == effTargetH));
+
         int outW;
         int outH;
         if (isIdentity)
@@ -47,35 +69,17 @@ public static unsafe class FrameTransformer
         }
         else if (hasExplicitTarget)
         {
-            FitWithinMax(targetWidth, targetHeight, out outW, out outH);
-        }
-        else if (rot == 0 || rot == 2)
-        {
-            FitWithinMax(srcW, srcH, out outW, out outH);
+            double targetScale = Math.Min((double)effTargetW / orientedW, (double)effTargetH / orientedH);
+            int scaledW = Math.Max(2, ((int)Math.Round(orientedW * targetScale)) & ~1);
+            int scaledH = Math.Max(2, ((int)Math.Round(orientedH * targetScale)) & ~1);
+            FitWithinMax(scaledW, scaledH, out outW, out outH);
         }
         else
         {
-            // For 90/270 portrait output, keep landscape container (e.g., 1280x720 or 1920x1080) with centered portrait image.
-            if (srcW > srcH)
-            {
-                FitWithinMax(srcW, srcH, out outW, out outH);
-            }
-            else
-            {
-                FitWithinMax(srcH, srcW, out outW, out outH);
-            }
+            FitWithinMax(orientedW, orientedH, out outW, out outH);
         }
 
-        int orientedW = (rot == 1 || rot == 3) ? srcH : srcW;
-        int orientedH = (rot == 1 || rot == 3) ? srcW : srcH;
-
-        double scale = Math.Min((double)outW / orientedW, (double)outH / orientedH);
-        int drawW = Math.Max(1, (int)Math.Round(orientedW * scale));
-        int drawH = Math.Max(1, (int)Math.Round(orientedH * scale));
-        int offX = (outW - drawW) / 2;
-        int offY = (outH - drawH) / 2;
-
-        return new TransformLayout(rot, orientedW, orientedH, outW, outH, drawW, drawH, offX, offY);
+        return new TransformLayout(rot, orientedW, orientedH, outW, outH, outW, outH, 0, 0);
     }
 
     private static void EnsureScratchAndClearBorders(ref byte[] scratch, in TransformLayout layout, out int outBytes)
@@ -115,7 +119,7 @@ public static unsafe class FrameTransformer
         bool flipHorizontal = false,
         bool flipVertical = false)
     {
-        if (srcW <= 0 || srcH <= 0 || srcNv12.Length < (srcW * srcH * 3) / 2)
+        if (srcW <= 0 || srcH <= 0 || srcNv12.Length < ((long)srcW * srcH * 3L) / 2L)
         {
             throw new ArgumentException($"Invalid NV12 frame size {srcW}x{srcH} (len={srcNv12.Length}).");
         }
@@ -297,6 +301,11 @@ public static unsafe class FrameTransformer
         bool flipHorizontal = false,
         bool flipVertical = false)
     {
+        if (srcW <= 0 || srcH <= 0 || src.Length < (long)srcW * srcH * 4L)
+        {
+            throw new ArgumentException($"Invalid BGRA32 frame size {srcW}x{srcH} (len={src.Length}).");
+        }
+
         TransformLayout layout = ComputeLayout(srcW, srcH, rotationQuarterTurns, targetWidth, targetHeight, flipHorizontal, flipVertical, out bool isIdentity);
         outW = layout.OutW;
         outH = layout.OutH;
@@ -461,14 +470,27 @@ public static unsafe class FrameTransformer
 
     private static void FitWithinMax(int w, int h, out int outW, out int outH)
     {
-        if (w <= ShmWriter.MaxWidth && h <= ShmWriter.MaxHeight)
+        int cw = Math.Max(2, w & ~1);
+        int ch = Math.Max(2, h & ~1);
+        if (cw <= ShmWriter.MaxDimension &&
+            ch <= ShmWriter.MaxDimension &&
+            (long)cw * ch * 4L <= ShmWriter.SlotSize)
         {
-            outW = w;
-            outH = h;
+            outW = cw;
+            outH = ch;
             return;
         }
-        double scale = Math.Min((double)ShmWriter.MaxWidth / w, (double)ShmWriter.MaxHeight / h);
-        outW = Math.Max(2, ((int)(w * scale)) & ~1);
-        outH = Math.Max(2, ((int)(h * scale)) & ~1);
+        double dimScale = Math.Min((double)ShmWriter.MaxDimension / cw, (double)ShmWriter.MaxDimension / ch);
+        double sw = cw * dimScale;
+        double sh = ch * dimScale;
+        double areaBytes = sw * sh * 4.0;
+        if (areaBytes > ShmWriter.SlotSize)
+        {
+            double areaScale = Math.Sqrt(ShmWriter.SlotSize / areaBytes);
+            sw *= areaScale;
+            sh *= areaScale;
+        }
+        outW = Math.Max(2, ((int)Math.Floor(sw)) & ~1);
+        outH = Math.Max(2, ((int)Math.Floor(sh)) & ~1);
     }
 }

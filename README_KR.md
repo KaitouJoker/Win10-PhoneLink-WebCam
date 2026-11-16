@@ -15,6 +15,7 @@ Windows 휴대폰과 연결(Phone Link) 앱 없이 동작하는 **Android ↔ Wi
   - **Windows PC**: **NVIDIA NVDEC**(`h264_cuvid` / `hevc_cuvid`), **Direct3D 11 (`d3d11va`)**, **CPU 소프트웨어 디코딩** 선택 및 다중 GPU 장치 지정을 지원합니다.
 - **DirectShow 가상 카메라 (`64-bit` & `32-bit`)**:
   - `vcam-dshow.dll`(x64) 및 `vcam-dshow32.dll`(x86) 필터를 `HKLM`에 등록하여 **Discord**를 포함한 32/64비트 데스크톱 앱에서 `Win10 PhoneLink Virtual Camera`가 인식됩니다.
+  - **세로(Portrait)** (`720x1280` / `1080x1920`) 및 **가로(Landscape)** (`1280x720` / `1920x1080`) 방향을 동적으로 일치시켜 **Discord**, **OBS**, 브라우저에서 좌/우·상/하 검정 래터박스 없이 영상 영역만 출력합니다.
   - 대기 화면 기본 출력은 **반전 없는 RAW 정방향**이며, 설정 및 실시간 하단 바/우클릭 메뉴에서 **좌/우 반전** 및 **상/하 반전**을 즉시 토글할 수 있습니다.
 - **리소스 절감용 미리보기 ON/OFF**:
   - PC 미리보기 영역에서 **마우스 우클릭 → 실시간 미리보기 끄기/켜기**를 통해 가상 카메라 송출을 유지하면서 UI 리소스를 절약할 수 있습니다.

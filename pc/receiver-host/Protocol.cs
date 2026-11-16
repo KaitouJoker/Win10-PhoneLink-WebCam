@@ -69,6 +69,7 @@ public sealed class ReceiverSettings
     public bool PreviewEnabled { get; set; } = true;
     public bool FlipHorizontal { get; set; } = false;
     public bool FlipVertical { get; set; } = false;
+    public bool LastIsPortrait { get; set; } = true;
     public string Language { get; set; } = string.Empty;
 
     [JsonIgnore]
@@ -243,6 +244,23 @@ public static class Protocol
         return ResolutionPresets.FirstOrDefault(r =>
             string.Equals(r.Id, id, StringComparison.OrdinalIgnoreCase))
             ?? ResolutionPresets[0];
+    }
+
+    public static (int Width, int Height) ComputeStandbyTargetSize(int targetWidth, int targetHeight, bool isPortrait)
+    {
+        if (targetWidth > 0 && targetHeight > 0)
+        {
+            // Android camera presets are 16:9; fit 16:9 inside target bounds to match live FrameTransformer output.
+            int boxW = isPortrait ? Math.Min(targetWidth, targetHeight) : Math.Max(targetWidth, targetHeight);
+            int boxH = isPortrait ? Math.Max(targetWidth, targetHeight) : Math.Min(targetWidth, targetHeight);
+            int refW = isPortrait ? 9 : 16;
+            int refH = isPortrait ? 16 : 9;
+            double scale = Math.Min((double)boxW / refW, (double)boxH / refH);
+            int w = Math.Max(2, ((int)Math.Round(refW * scale)) & ~1);
+            int h = Math.Max(2, ((int)Math.Round(refH * scale)) & ~1);
+            return (w, h);
+        }
+        return isPortrait ? (720, 1280) : (1280, 720);
     }
 
     public static string GenerateHexToken16()

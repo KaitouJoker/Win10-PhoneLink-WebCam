@@ -90,6 +90,7 @@ class ShmHeaderSnapshot:
     timestamp_100ns: int
     payload_size: int
     flip_flags: int = 0
+    orientation_hint: int = 0
 
 
 def read_shm_header() -> ShmHeaderSnapshot:
@@ -118,6 +119,7 @@ def read_shm_header() -> ShmHeaderSnapshot:
                 timestamp_100ns=fields[9],
                 payload_size=fields[10],
                 flip_flags=fields[11][0],
+                orientation_hint=fields[11][1],
             )
         finally:
             kernel32.UnmapViewOfFile(ptr)
@@ -174,7 +176,7 @@ def _read_pe_machine(path: Path) -> int:
 
 
 def check_portable_folder() -> None:
-    print("[1/8] Verifying portable folder contents...")
+    print("[1/11] Verifying portable folder contents...")
     required = [RECEIVER_EXE, VCAM_DLL, VCAM_DLL32, REG_BAT, UNREG_BAT, INSTALL_ALL_BAT, PORTABLE_APK, PORTABLE_FFMPEG]
     for p in required:
         assert p.is_file(), f"Missing portable file: {p}"
@@ -202,8 +204,48 @@ def _find_active_vcam_hive() -> tuple[int, str, str] | None:
     return None
 
 
+REG_APP_SUBKEY = r"Software\Win10PhoneLinkWebCam"
+
+
+def _get_app_dword_reg(value_name: str) -> int | None:
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_APP_SUBKEY) as k:
+            val, _ = winreg.QueryValueEx(k, value_name)
+            return int(val)
+    except OSError:
+        return None
+
+
+def _set_app_dword_reg(value_name: str, val: int | None) -> None:
+    if val is None:
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_APP_SUBKEY, 0, winreg.KEY_SET_VALUE) as k:
+                winreg.DeleteValue(k, value_name)
+        except OSError:
+            pass
+    else:
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, REG_APP_SUBKEY) as k:
+            winreg.SetValueEx(k, value_name, 0, winreg.REG_DWORD, int(val))
+
+
+def _get_orientation_hint_reg() -> int | None:
+    return _get_app_dword_reg("OrientationHint")
+
+
+def _set_orientation_hint_reg(val: int | None) -> None:
+    _set_app_dword_reg("OrientationHint", val)
+
+
+def _get_flip_flags_reg() -> int | None:
+    return _get_app_dword_reg("FlipFlags")
+
+
+def _set_flip_flags_reg(val: int | None) -> None:
+    _set_app_dword_reg("FlipFlags", val)
+
+
 def check_dshow_registration() -> None:
-    print("[2/8] Verifying vcam-dshow.dll registration and DirectShow enumeration...")
+    print("[2/11] Verifying vcam-dshow.dll registration and DirectShow enumeration...")
     active = _find_active_vcam_hive()
     if active is None or Path(active[2]).resolve() != VCAM_DLL.resolve():
         reg_res = subprocess.run(["cmd.exe", "/c", str(REG_BAT), "--no-elevate"], capture_output=True, text=True, check=False)
@@ -236,7 +278,27 @@ def check_dshow_registration() -> None:
     assert f'"{VCAM_NAME}" (video)' in combined, f'"{VCAM_NAME}" (video) not found in dshow list:\n{combined}'
     print(f'  OK: DirectShow listed "{VCAM_NAME}" (video)')
 
-    opts_res = subprocess.run(
+    # 1) Fresh/portrait orientation isolation (OrientationHint unset and =2) must expose ONLY portrait caps (no 1280x720/640x480 leak)
+    for hint_label, hint_val in (("unset", None), ("portrait=2", 2)):
+        _set_orientation_hint_reg(hint_val)
+        opts_res = subprocess.run(
+            [str(SYSTEM_FFMPEG), "-hide_banner", "-f", "dshow", "-list_options", "true", "-i", f"video={VCAM_NAME}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        opts_text = opts_res.stdout + "\n" + opts_res.stderr
+        assert "max s=1080x1920 fps=60" in opts_text, f"[{hint_label}] Expected 1080x1920 60fps portrait cap:\n{opts_text}"
+        assert "max s=720x1280 fps=60" in opts_text, f"[{hint_label}] Expected 720x1280 60fps portrait cap:\n{opts_text}"
+        assert "s=1280x720" not in opts_text and "s=640x480" not in opts_text, (
+            f"[{hint_label}] Landscape capability leaked into portrait idle options:\n{opts_text}"
+        )
+
+    # 2) Landscape orientation hint (=1) must expose landscape caps
+    _set_orientation_hint_reg(1)
+    opts_land = subprocess.run(
         [str(SYSTEM_FFMPEG), "-hide_banner", "-f", "dshow", "-list_options", "true", "-i", f"video={VCAM_NAME}"],
         capture_output=True,
         text=True,
@@ -244,33 +306,87 @@ def check_dshow_registration() -> None:
         errors="replace",
         check=False,
     )
-    opts_text = opts_res.stdout + "\n" + opts_res.stderr
-    assert "max s=1920x1080 fps=60" in opts_text, f"Expected 1920x1080 60fps capability:\n{opts_text}"
-    assert "max s=1280x720 fps=60" in opts_text, f"Expected 1280x720 60fps capability:\n{opts_text}"
-    print("  OK: DirectShow capabilities verified (1920x1080 & 1280x720 advertise 60 fps)")
+    opts_land_text = opts_land.stdout + "\n" + opts_land.stderr
+    assert "max s=1920x1080 fps=60" in opts_land_text, f"Expected 1920x1080 60fps capability:\n{opts_land_text}"
+    assert "max s=1280x720 fps=60" in opts_land_text, f"Expected 1280x720 60fps capability:\n{opts_land_text}"
+    assert "s=720x1280" not in opts_land_text, f"Portrait capability leaked into landscape options:\n{opts_land_text}"
+    _set_orientation_hint_reg(2)
+    print("  OK: DirectShow orientation isolation verified (portrait idle/unset=720x1280/1080x1920 only; landscape=1280x720/1920x1080 only)")
 
 
-def capture_standby_baseline() -> Path:
-    print("[3/7] Capturing standby baseline frame from DirectShow...")
-    out_png = TESTS_DIR / "standby_baseline.png"
-    if out_png.exists():
-        out_png.unlink()
-    cmd = [
-        str(SYSTEM_FFMPEG), "-hide_banner", "-loglevel", "error", "-y",
-        "-f", "dshow", "-video_size", "1280x720",
-        "-i", f"video={VCAM_NAME}",
-        "-frames:v", "1", str(out_png),
-    ]
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=False)
-    assert res.returncode == 0 and out_png.is_file(), f"Standby capture failed: {res.stderr}"
-    arr = np.array(Image.open(out_png).convert("RGB"))
-    assert arr.shape == (720, 1280, 3), f"Unexpected standby dimensions: {arr.shape}"
-    print(f"  OK: Standby baseline captured ({out_png.stat().st_size:,} bytes, shape={arr.shape})")
-    return out_png
+def _assert_standby_unflipped(arr: np.ndarray, label: str) -> None:
+    """Verify standby baseline is RAW (unflipped): top-only corner brackets & bottom-left progress knob."""
+    h, w = arr.shape[:2]
+    card_w = (w * 3) // 4
+    card_h = h // 2
+    card_x = (w - card_w) // 2
+    card_y = (h - card_h) // 2
+    bar_track_w = card_w - 80
+    bar_x = card_x + 40
+    bar_y = card_y + card_h - 36
+    knob_w = max(36, bar_track_w // 6)
+
+    top_bracket_max_b = int(arr[20:23, 20:36, 2].max())
+    bot_bracket_max_b = int(arr[h - 23:h - 20, 20:36, 2].max())
+    assert top_bracket_max_b >= 190 and bot_bracket_max_b <= 110, (
+        f"[{label}] Standby vertical flip detected (top_b={top_bracket_max_b}, bot_b={bot_bracket_max_b})"
+    )
+
+    left_bar = arr[bar_y + 2:bar_y + 6, bar_x:bar_x + knob_w + bar_track_w // 4, 2]
+    right_bar = arr[bar_y + 2:bar_y + 6, bar_x + bar_track_w - knob_w:bar_x + bar_track_w, 2]
+    left_max_b = int(left_bar.max())
+    right_max_b = int(right_bar.max())
+    assert left_max_b >= 190 and right_max_b <= 110, (
+        f"[{label}] Standby horizontal flip detected (left_b={left_max_b}, right_b={right_max_b})"
+    )
+
+
+def capture_standby_baseline() -> tuple[Path, Path]:
+    print("[3/11] Capturing portrait (default) & landscape standby baselines from DirectShow (FlipFlags=0 RAW)...")
+    portrait_png = TESTS_DIR / "standby_portrait_baseline.png"
+    landscape_png = TESTS_DIR / "standby_baseline.png"
+    for p in (portrait_png, landscape_png):
+        if p.exists():
+            p.unlink()
+
+    prev_flip = _get_flip_flags_reg()
+    _set_flip_flags_reg(0)
+    try:
+        _set_orientation_hint_reg(2)
+        cmd_p = [
+            str(SYSTEM_FFMPEG), "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "dshow",
+            "-i", f"video={VCAM_NAME}",
+            "-frames:v", "1", str(portrait_png),
+        ]
+        res_p = subprocess.run(cmd_p, capture_output=True, text=True, timeout=15, check=False)
+        assert res_p.returncode == 0 and portrait_png.is_file(), f"Portrait standby capture failed: {res_p.stderr}"
+        arr_p = np.array(Image.open(portrait_png).convert("RGB"))
+        assert arr_p.shape == (1280, 720, 3), f"Expected default standby to be 720x1280 portrait, got {arr_p.shape}"
+        _assert_standby_unflipped(arr_p, "portrait")
+
+        _set_orientation_hint_reg(1)
+        cmd_l = [
+            str(SYSTEM_FFMPEG), "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "dshow", "-video_size", "1280x720",
+            "-i", f"video={VCAM_NAME}",
+            "-frames:v", "1", str(landscape_png),
+        ]
+        res_l = subprocess.run(cmd_l, capture_output=True, text=True, timeout=15, check=False)
+        assert res_l.returncode == 0 and landscape_png.is_file(), f"Landscape standby capture failed: {res_l.stderr}"
+        arr_l = np.array(Image.open(landscape_png).convert("RGB"))
+        assert arr_l.shape == (720, 1280, 3), f"Unexpected landscape standby dimensions: {arr_l.shape}"
+        _assert_standby_unflipped(arr_l, "landscape")
+    finally:
+        _set_flip_flags_reg(prev_flip)
+        _set_orientation_hint_reg(2)
+
+    print(f"  OK: Standby baselines captured unflipped RAW (portrait={arr_p.shape}, landscape={arr_l.shape})")
+    return landscape_png, portrait_png
 
 
 def check_qr_and_token_rejection() -> None:
-    print("[4/7] Verifying QR payload generation, OpenCV QR decode, and token rejection...")
+    print("[4/11] Verifying QR payload generation, OpenCV QR decode, and token rejection...")
     test_ip = "192.168.50.10"
     cli_json_res = subprocess.run(
         [str(RECEIVER_EXE), "--print-qr-json", "--ip", test_ip, "--port", str(TEST_PORT), "--token", TEST_TOKEN],
@@ -733,8 +849,14 @@ def verify_60fps_1080p_rotated(codec: str, port: int, token: str) -> None:
                 pass
 
         shm = read_shm_header()
-        assert shm.frame_state == 1 and shm.width == 1920 and shm.height == 1080, (
-            f"[{codec}-60fps] Unexpected SHM state: {shm}"
+        assert (
+            shm.frame_state == 1
+            and shm.width == 1080
+            and shm.height == 1920
+            and shm.stride == 1080 * 4
+            and shm.payload_size == 1080 * 1920 * 4
+        ), (
+            f"[{codec}-60fps] Unexpected SHM state (expected 1080x1920 portrait): {shm}"
         )
 
         stdout_text, stderr_text = receiver_proc.communicate(timeout=15)
@@ -750,7 +872,7 @@ def verify_60fps_1080p_rotated(codec: str, port: int, token: str) -> None:
         total_frames = int(m_frames.group(1)) if m_frames else 0
         assert total_frames >= 200, f"[{codec}-60fps] TotalFrames={total_frames} < 200:\n{stdout_text}"
         print(
-            f"  OK: [{codec}-60fps] 1920x1080 rot=270deg peak_fps={peak_fps:.1f}, "
+            f"  OK: [{codec}-60fps] 1080x1920 portrait (rot=270deg) peak_fps={peak_fps:.1f}, "
             f"TotalFrames={total_frames}, FFmpeg drops={drops or [0]}"
         )
     finally:
@@ -866,8 +988,327 @@ def verify_high_bitrate_1080p60(port: int, token: str) -> None:
                 receiver_proc.kill()
 
 
+def verify_portrait_dshow_pipeline(
+    codec: str,
+    rotation_deg: int,
+    port: int,
+    token: str,
+    capture_pattern: str,
+    standby_png: Path,
+    target_width: int = 0,
+    target_height: int = 0,
+    expected_out_w: int = 720,
+    expected_out_h: int = 1280,
+    decoder: str = "nvdec",
+    extra_receiver_args: list[str] | None = None,
+    dshow_pixel_format: str | None = None,
+    expected_tr_hex: str | None = None,
+    expected_bl_hex: str | None = None,
+    src_w: int = 1280,
+    src_h: int = 720,
+) -> None:
+    """Verify portrait phone streaming outputs pure portrait frames (no black pillarboxes/letterboxes) in SHM and DirectShow."""
+    assert codec in ("h264", "hevc")
+    assert rotation_deg in (90, 270)
+
+    bg_hex = "#108820"
+    tl_hex = "#FFFF00"
+    br_hex = "#00FFFF"
+    box_hex = "#FF2020"
+    duration_s = 12
+
+    receiver_cmd = [
+        str(RECEIVER_EXE),
+        "--headless-test",
+        "--port", str(port),
+        "--token", token,
+        "--decoder", decoder,
+        "--duration", str(duration_s),
+        *(extra_receiver_args or []),
+    ]
+    if target_width > 0 and target_height > 0:
+        receiver_cmd.extend(["--width", str(target_width), "--height", str(target_height)])
+
+    receiver_proc = subprocess.Popen(
+        receiver_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    if codec == "h264":
+        enc_args = [
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+            "-threads", "1", "-profile:v", "baseline", "-g", "15", "-bf", "0",
+        ]
+    else:
+        enc_args = [
+            "-c:v", "libx265", "-preset", "ultrafast", "-tune", "zerolatency",
+            "-x265-params", "keyint=15:min-keyint=15:bframes=0:repeat-headers=1:pools=none:frame-threads=1",
+            "-threads", "1",
+        ]
+
+    msx = src_w / 1280.0
+    msy = src_h / 720.0
+    ffmpeg_gen_cmd = [
+        str(SYSTEM_FFMPEG),
+        "-hide_banner", "-loglevel", "error",
+        "-re",
+        "-f", "lavfi", "-i", f"color=c={bg_hex}:s={src_w}x{src_h}:r=30:d={duration_s}",
+        "-f", "lavfi", "-i", f"color=c={box_hex}:s={int(200*msx)}x{int(200*msy)}:r=30:d={duration_s}",
+        "-filter_complex",
+        f"[0:v]drawbox=x={int(40*msx)}:y={int(40*msy)}:w={int(180*msx)}:h={int(120*msy)}:color={tl_hex}:t=fill,"
+        f"drawbox=x={int(1060*msx)}:y={int(560*msy)}:w={int(180*msx)}:h={int(120*msy)}:color={br_hex}:t=fill[bg];"
+        f"[bg][1:v]overlay=x='mod(n*{int(28*msx)},{int(1080*msx)})':y={int(260*msy)}:shortest=1",
+        *enc_args,
+        "-pix_fmt", "yuv420p",
+        "-flush_packets", "1",
+        "-f", codec,
+        "pipe:1",
+    ]
+
+    captured_files = [TESTS_DIR / (capture_pattern % i) for i in range(1, 6)]
+    for p in captured_files:
+        if p.exists():
+            p.unlink()
+
+    gen_proc = None
+    sock = None
+    try:
+        wait_for_tcp_port("127.0.0.1", port, timeout_s=8.0)
+        sock = connect_plwc("127.0.0.1", port, token, codec, f"e2e-portrait-{codec}", src_w, src_h, 30)
+        send_plwc_packet(sock, 2, 0, 0, json.dumps({"rotation": rotation_deg, "camera": "back"}).encode("utf-8"))
+
+        gen_proc = subprocess.Popen(
+            ffmpeg_gen_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+        )
+
+        import threading
+
+        stop_streaming = threading.Event()
+        stream_errors: list[str] = []
+        rot_code = 1 if rotation_deg == 90 else 3
+        rot_flag_bits = (rot_code & 0x03) << 2
+
+        def pump_annexb() -> None:
+            assert gen_proc is not None and gen_proc.stdout is not None and sock is not None
+            fd = gen_proc.stdout.fileno()
+            buf = bytearray()
+            pending_prefix = bytearray()
+            pending_config = False
+            sent_initial_config = False
+            pts_us = 0
+
+            def emit_nal(start_code: bytes, nal_bytes: bytes) -> None:
+                nonlocal pending_config, sent_initial_config, pts_us
+                if stop_streaming.is_set():
+                    return
+                is_cfg, is_vcl, is_idr = _nal_info(codec, nal_bytes)
+                full_nal = start_code + nal_bytes
+                if is_cfg:
+                    pending_config = True
+                    pending_prefix.extend(full_nal)
+                    return
+                if not is_vcl:
+                    pending_prefix.extend(full_nal)
+                    return
+                if pending_config and not sent_initial_config:
+                    send_plwc_packet(sock, 1, 0x02 | rot_flag_bits, pts_us, bytes(pending_prefix))
+                    sent_initial_config = True
+                flags = (0x01 if is_idr else 0x00) | rot_flag_bits
+                if pending_prefix:
+                    payload = bytes(pending_prefix) + full_nal
+                    if pending_config:
+                        flags |= 0x02
+                    pending_prefix.clear()
+                    pending_config = False
+                else:
+                    payload = full_nal
+                send_plwc_packet(sock, 1, flags, pts_us, payload)
+                pts_us += 33333
+
+            try:
+                while not stop_streaming.is_set():
+                    chunk = os.read(fd, 8192)
+                    if not chunk:
+                        break
+                    buf.extend(chunk)
+                    while True:
+                        m1 = START_CODE_RE.search(buf)
+                        if not m1:
+                            break
+                        m2 = START_CODE_RE.search(buf, m1.end())
+                        if not m2:
+                            break
+                        sc = bytes(buf[m1.start():m1.end()])
+                        nal = bytes(buf[m1.end():m2.start()])
+                        del buf[:m2.start()]
+                        if nal:
+                            emit_nal(sc, nal)
+            except Exception as exc:
+                if not stop_streaming.is_set():
+                    stream_errors.append(str(exc))
+
+        pump_thread = threading.Thread(target=pump_annexb, daemon=True)
+        pump_thread.start()
+
+        shm_deadline = time.monotonic() + 7.0
+        shm1: ShmHeaderSnapshot | None = None
+        while time.monotonic() < shm_deadline:
+            try:
+                snap = read_shm_header()
+                if snap.magic == SHM_MAGIC and snap.frame_state == 1 and snap.write_seq > 5:
+                    shm1 = snap
+                    break
+            except AssertionError:
+                pass
+            time.sleep(0.15)
+        assert shm1 is not None, f"[{codec}-portrait] SHM did not enter LIVE state in time"
+        assert shm1.width == expected_out_w and shm1.height == expected_out_h, (
+            f"[{codec}-portrait] Expected SHM {expected_out_w}x{expected_out_h}, got {shm1.width}x{shm1.height}"
+        )
+        assert shm1.stride == expected_out_w * 4
+        assert shm1.payload_size == expected_out_w * expected_out_h * 4
+        assert shm1.orientation_hint == 2, f"[{codec}-portrait] Expected orientation_hint=2, got {shm1.orientation_hint}"
+
+        # Verify DirectShow only advertises portrait capabilities while live portrait stream is active (prevents Discord/WebRTC picking 1280x720)
+        opts_res = subprocess.run(
+            [str(SYSTEM_FFMPEG), "-hide_banner", "-f", "dshow", "-list_options", "true", "-i", f"video={VCAM_NAME}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        opts_text = opts_res.stdout + "\n" + opts_res.stderr
+        assert f"s={expected_out_w}x{expected_out_h}" in opts_text, (
+            f"[{codec}-portrait] Expected {expected_out_w}x{expected_out_h} in live dshow options:\n{opts_text}"
+        )
+        assert "s=1280x720" not in opts_text and "s=1920x1080" not in opts_text, (
+            f"[{codec}-portrait] Landscape capability leaked into live portrait dshow options:\n{opts_text}"
+        )
+
+        # Capture 5 frames WITHOUT -video_size (mirrors OBS Device Default / GetFormat negotiation)
+        cap_out = str(TESTS_DIR / capture_pattern)
+        dshow_cmd = [
+            str(SYSTEM_FFMPEG), "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "dshow",
+            *(["-pixel_format", dshow_pixel_format] if dshow_pixel_format else []),
+            "-i", f"video={VCAM_NAME}",
+            "-frames:v", "5", cap_out,
+        ]
+        cap_res = subprocess.run(dshow_cmd, capture_output=True, text=True, timeout=15, check=False)
+        assert cap_res.returncode == 0, f"[{codec}-portrait] DirectShow capture failed: {cap_res.stderr}"
+
+        stop_streaming.set()
+        if gen_proc.poll() is None:
+            gen_proc.terminate()
+        pump_thread.join(timeout=2.0)
+        assert not stream_errors, f"[{codec}-portrait] Stream pump errors: {stream_errors}"
+
+        stdout_text, stderr_text = receiver_proc.communicate(timeout=20)
+        assert receiver_proc.returncode == 0, (
+            f"[{codec}-portrait] PhoneCamReceiver exited {receiver_proc.returncode}\nSTDOUT:\n{stdout_text}\nSTDERR:\n{stderr_text}"
+        )
+
+        frames_rgb: list[np.ndarray] = []
+        for idx, png in enumerate(captured_files, start=1):
+            assert png.is_file(), f"[{codec}-portrait] Missing captured PNG: {png}"
+            arr = np.array(Image.open(png).convert("RGB"), dtype=np.int16)
+            assert arr.shape == (expected_out_h, expected_out_w, 3), (
+                f"[{codec}-portrait] Frame {idx} expected portrait shape ({expected_out_h}, {expected_out_w}, 3), got {arr.shape}"
+            )
+            frames_rgb.append(arr)
+
+        f0 = frames_rgb[0]
+        f4 = frames_rgb[4]
+        if standby_png.is_file():
+            standby_arr = np.array(Image.open(standby_png).convert("RGB"), dtype=np.int16)
+            if standby_arr.shape == f0.shape:
+                standby_diff = float(np.mean(np.abs(f0 - standby_arr)))
+                assert standby_diff > 40.0, f"[{codec}-portrait] Captured frame too close to standby baseline (diff={standby_diff:.2f})"
+        bg_exp = np.array([16, 136, 32], dtype=float)
+        tl_exp = np.array([255, 255, 0], dtype=float)
+        br_exp = np.array([0, 255, 255], dtype=float)
+
+        # Check all 4 border strips are non-black background (zero letterbox/pillarbox margins anywhere)
+        sx = expected_out_w / 720.0
+        sy = expected_out_h / 1280.0
+        edge_w = max(4, int(12 * sx))
+        edge_h = max(4, int(12 * sy))
+        corner_span = max(20, int(160 * sx))
+        for border_name, patch in [
+            ("left edge", f0[:, :edge_w, :]),
+            ("right edge", f0[:, -edge_w:, :]),
+            ("top-left margin", f0[:edge_h, :corner_span, :]),
+            ("bottom-right margin", f0[-edge_h:, -corner_span:, :]),
+        ]:
+            mean_rgb = patch.mean(axis=(0, 1))
+            err = float(np.linalg.norm(mean_rgb - bg_exp))
+            assert err < 55.0, (
+                f"[{codec}-portrait] {border_name} is not background (letterbox/black bar suspected): "
+                f"got RGB={mean_rgb.round(1).tolist()}, expected ~{bg_exp.tolist()}"
+            )
+
+        # Check rotated marker corner colors
+        def _hex_rgb(h: str) -> np.ndarray:
+            h = h.lstrip("#")
+            return np.array([int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)], dtype=float)
+
+        tr_patch = f0[int(80 * sy):int(180 * sy), int(590 * sx):int(650 * sx)].mean(axis=(0, 1))
+        bl_patch = f0[int(1100 * sy):int(1200 * sy), int(70 * sx):int(130 * sx)].mean(axis=(0, 1))
+        if rotation_deg == 90:
+            exp_tr, exp_bl = tl_exp, br_exp
+        else:
+            exp_tr, exp_bl = br_exp, tl_exp
+        if expected_tr_hex:
+            exp_tr = _hex_rgb(expected_tr_hex)
+        if expected_bl_hex:
+            exp_bl = _hex_rgb(expected_bl_hex)
+        assert float(np.linalg.norm(tr_patch - exp_tr)) < 60.0, (
+            f"[{codec}-portrait] TR marker mismatch: got {tr_patch.round(1).tolist()}, expected {exp_tr.tolist()}"
+        )
+        assert float(np.linalg.norm(bl_patch - exp_bl)) < 60.0, (
+            f"[{codec}-portrait] BL marker mismatch: got {bl_patch.round(1).tolist()}, expected {exp_bl.tolist()}"
+        )
+
+        # Verify motion along vertical moving-box strip
+        band_diff = np.abs(f4[:, int(280 * sx):int(440 * sx), :] - f0[:, int(280 * sx):int(440 * sx), :]).max(axis=2)
+        changed_pixels = int(np.sum(band_diff > 40))
+        assert changed_pixels > int(2500 * sx * sy), (
+            f"[{codec}-portrait] Insufficient motion in portrait strip: changed_pixels={changed_pixels}"
+        )
+        print(
+            f"  OK: [{codec}-portrait/{decoder}] rot={rotation_deg}deg -> {expected_out_w}x{expected_out_h} pure portrait "
+            f"(no letterbox borders, motion={changed_pixels}px, TR={tr_patch.round(0).tolist()}, BL={bl_patch.round(0).tolist()})"
+        )
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+        if gen_proc is not None and gen_proc.poll() is None:
+            gen_proc.terminate()
+            try:
+                gen_proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                gen_proc.kill()
+        if receiver_proc.poll() is None:
+            receiver_proc.terminate()
+            try:
+                receiver_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                receiver_proc.kill()
+
+
 def check_android_completeness() -> None:
-    print("[8/8] Auditing Android companion project & wire compatibility...")
+    print("[11/11] Auditing Android companion project & wire compatibility...")
     required_files = [
         ANDROID_DIR / "settings.gradle.kts",
         ANDROID_DIR / "build.gradle.kts",
@@ -969,68 +1410,156 @@ def check_android_completeness() -> None:
 
 def main() -> int:
     start_ts = time.monotonic()
-    check_portable_folder()
-    check_dshow_registration()
-    standby_png = capture_standby_baseline()
-    check_qr_and_token_rejection()
+    orig_hint = _get_orientation_hint_reg()
+    orig_flip = _get_flip_flags_reg()
+    try:
+        check_portable_folder()
+        check_dshow_registration()
+        standby_png, standby_portrait_png = capture_standby_baseline()
+        check_qr_and_token_rejection()
 
-    print("[5/7] Running E2E live H.264 pipeline (ffmpeg -> PLWC -> NVDEC h264_cuvid -> SHM -> DShow)...")
-    stream_live_ffmpeg_to_plwc(
-        codec="h264",
-        bg_hex="#108820",
-        tl_hex="#FFFF00",
-        br_hex="#00FFFF",
-        box_hex="#FF2020",
-        port=TEST_PORT,
-        token=TEST_TOKEN,
-        duration_s=12,
-        capture_pattern="captured_frame_%d.png",
-        standby_png=standby_png,
-    )
+        print("[5/11] Running E2E live H.264 pipeline (ffmpeg -> PLWC -> NVDEC h264_cuvid -> SHM -> DShow)...")
+        stream_live_ffmpeg_to_plwc(
+            codec="h264",
+            bg_hex="#108820",
+            tl_hex="#FFFF00",
+            br_hex="#00FFFF",
+            box_hex="#FF2020",
+            port=TEST_PORT,
+            token=TEST_TOKEN,
+            duration_s=12,
+            capture_pattern="captured_frame_%d.png",
+            standby_png=standby_png,
+        )
 
-    print("[6/7] Running E2E live HEVC pipeline (ffmpeg -> PLWC -> NVDEC hevc_cuvid -> SHM -> DShow)...")
-    stream_live_ffmpeg_to_plwc(
-        codec="hevc",
-        bg_hex="#2030C0",
-        tl_hex="#FF00FF",
-        br_hex="#FFA500",
-        box_hex="#00FF00",
-        port=TEST_PORT,
-        token=TEST_TOKEN,
-        duration_s=12,
-        capture_pattern="captured_hevc_frame_%d.png",
-        standby_png=standby_png,
-    )
+        print("[6/11] Running E2E live HEVC pipeline (ffmpeg -> PLWC -> NVDEC hevc_cuvid -> SHM -> DShow)...")
+        stream_live_ffmpeg_to_plwc(
+            codec="hevc",
+            bg_hex="#2030C0",
+            tl_hex="#FF00FF",
+            br_hex="#FFA500",
+            box_hex="#00FF00",
+            port=TEST_PORT,
+            token=TEST_TOKEN,
+            duration_s=12,
+            capture_pattern="captured_hevc_frame_%d.png",
+            standby_png=standby_png,
+        )
 
-    print("[7/9] Running 60fps 1080p rotated (270deg) stream verification (h264 & hevc NVDEC)...")
-    verify_60fps_1080p_rotated("h264", TEST_PORT, TEST_TOKEN)
-    verify_60fps_1080p_rotated("hevc", TEST_PORT, TEST_TOKEN)
+        print("[7/11] Running 60fps 1080p rotated (270deg) stream verification (h264 & hevc NVDEC)...")
+        verify_60fps_1080p_rotated("h264", TEST_PORT, TEST_TOKEN)
+        verify_60fps_1080p_rotated("hevc", TEST_PORT, TEST_TOKEN)
 
-    print("[8/10] Running >100 Mbps 1080p60 high-bitrate verification (h264 NVDEC)...")
-    verify_high_bitrate_1080p60(TEST_PORT, TEST_TOKEN)
+        print("[8/11] Running >100 Mbps 1080p60 high-bitrate verification (h264 NVDEC)...")
+        verify_high_bitrate_1080p60(TEST_PORT, TEST_TOKEN)
 
-    print("[8/9] Running E2E horizontal + vertical flip verification (--flip-h --flip-v)...")
-    stream_live_ffmpeg_to_plwc(
-        codec="h264",
-        bg_hex="#108820",
-        tl_hex="#FFFF00",
-        br_hex="#00FFFF",
-        box_hex="#FF2020",
-        port=TEST_PORT,
-        token=TEST_TOKEN,
-        duration_s=10,
-        capture_pattern="captured_flip_frame_%d.png",
-        standby_png=standby_png,
-        extra_receiver_args=["--flip-h", "--flip-v"],
-        expected_tl_hex="#00FFFF",
-        expected_br_hex="#FFFF00",
-        expected_flip_flags=0x83,
-    )
+        print("[9/11] Running E2E portrait (no-letterbox) DirectShow verification (H.264/HEVC, 1080x1920, 640x480->360x640, D3D11VA/CPU, flip)...")
+        verify_portrait_dshow_pipeline(
+            codec="h264",
+            rotation_deg=90,
+            port=TEST_PORT,
+            token=TEST_TOKEN,
+            capture_pattern="captured_portrait_h264_%d.png",
+            standby_png=standby_portrait_png,
+            target_width=1280,
+            target_height=720,
+            expected_out_w=720,
+            expected_out_h=1280,
+        )
+        verify_portrait_dshow_pipeline(
+            codec="hevc",
+            rotation_deg=270,
+            port=TEST_PORT,
+            token=TEST_TOKEN,
+            capture_pattern="captured_portrait_hevc_%d.png",
+            standby_png=standby_portrait_png,
+            target_width=0,
+            target_height=0,
+            expected_out_w=720,
+            expected_out_h=1280,
+        )
+        verify_portrait_dshow_pipeline(
+            codec="h264",
+            rotation_deg=90,
+            port=TEST_PORT,
+            token=TEST_TOKEN,
+            capture_pattern="captured_portrait_1080p_%d.png",
+            standby_png=standby_portrait_png,
+            target_width=1920,
+            target_height=1080,
+            expected_out_w=1080,
+            expected_out_h=1920,
+            src_w=1920,
+            src_h=1080,
+        )
+        verify_portrait_dshow_pipeline(
+            codec="h264",
+            rotation_deg=90,
+            port=TEST_PORT,
+            token=TEST_TOKEN,
+            capture_pattern="captured_portrait_360x640_%d.png",
+            standby_png=standby_portrait_png,
+            target_width=640,
+            target_height=480,
+            expected_out_w=360,
+            expected_out_h=640,
+        )
+        verify_portrait_dshow_pipeline(
+            codec="h264",
+            rotation_deg=90,
+            port=TEST_PORT,
+            token=TEST_TOKEN,
+            capture_pattern="captured_portrait_d3d11_fliphv_%d.png",
+            standby_png=standby_portrait_png,
+            target_width=1280,
+            target_height=720,
+            expected_out_w=720,
+            expected_out_h=1280,
+            decoder="d3d11va",
+            extra_receiver_args=["--flip-h", "--flip-v"],
+            expected_tr_hex="#00FFFF",
+            expected_bl_hex="#FFFF00",
+        )
+        verify_portrait_dshow_pipeline(
+            codec="h264",
+            rotation_deg=270,
+            port=TEST_PORT,
+            token=TEST_TOKEN,
+            capture_pattern="captured_portrait_cpu_bgr0_%d.png",
+            standby_png=standby_portrait_png,
+            target_width=1280,
+            target_height=720,
+            expected_out_w=720,
+            expected_out_h=1280,
+            decoder="cpu",
+            dshow_pixel_format="bgr0",
+        )
 
-    check_android_completeness()
-    elapsed = time.monotonic() - start_ts
-    print(f"\nALL E2E VERIFICATION CHECKS PASSED in {elapsed:.1f}s.")
-    return 0
+        print("[10/11] Running E2E horizontal + vertical flip verification (--flip-h --flip-v)...")
+        stream_live_ffmpeg_to_plwc(
+            codec="h264",
+            bg_hex="#108820",
+            tl_hex="#FFFF00",
+            br_hex="#00FFFF",
+            box_hex="#FF2020",
+            port=TEST_PORT,
+            token=TEST_TOKEN,
+            duration_s=10,
+            capture_pattern="captured_flip_frame_%d.png",
+            standby_png=standby_png,
+            extra_receiver_args=["--flip-h", "--flip-v"],
+            expected_tl_hex="#00FFFF",
+            expected_br_hex="#FFFF00",
+            expected_flip_flags=0x83,
+        )
+
+        check_android_completeness()
+        elapsed = time.monotonic() - start_ts
+        print(f"\nALL E2E VERIFICATION CHECKS PASSED in {elapsed:.1f}s.")
+        return 0
+    finally:
+        _set_orientation_hint_reg(orig_hint if orig_hint is not None else 2)
+        _set_flip_flags_reg(orig_flip)
 
 
 if __name__ == "__main__":

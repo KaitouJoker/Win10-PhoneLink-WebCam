@@ -501,16 +501,6 @@ bool FrameConverter::ConvertRgb24ToTarget1to1(
 void FrameConverter::ScaleAndCenterToScratchBgra(const ShmFrameSnapshot& src, uint32_t dstW, uint32_t dstH) {
     EnsureScratch(dstW, dstH);
 
-    // Fill letterbox/pillarbox canvas with opaque black.
-    uint8_t* dst = m_scratchBgra.data();
-    const size_t totalPixels = static_cast<size_t>(dstW) * dstH;
-    for (size_t i = 0; i < totalPixels; ++i) {
-        dst[i * 4u + 0] = 0;
-        dst[i * 4u + 1] = 0;
-        dst[i * 4u + 2] = 0;
-        dst[i * 4u + 3] = 255;
-    }
-
     const double scaleX = static_cast<double>(dstW) / static_cast<double>(src.width);
     const double scaleY = static_cast<double>(dstH) / static_cast<double>(src.height);
     const double scale = (scaleX < scaleY) ? scaleX : scaleY;
@@ -522,6 +512,18 @@ void FrameConverter::ScaleAndCenterToScratchBgra(const ShmFrameSnapshot& src, ui
 
     const uint32_t offX = ((dstW - fitW) / 2u) & ~1u;
     const uint32_t offY = ((dstH - fitH) / 2u) & ~1u;
+
+    uint8_t* dst = m_scratchBgra.data();
+    if (fitW != dstW || fitH != dstH) {
+        // Fill letterbox/pillarbox canvas with opaque black only when margins exist.
+        const size_t totalPixels = static_cast<size_t>(dstW) * dstH;
+        for (size_t i = 0; i < totalPixels; ++i) {
+            dst[i * 4u + 0] = 0;
+            dst[i * 4u + 1] = 0;
+            dst[i * 4u + 2] = 0;
+            dst[i * 4u + 3] = 255;
+        }
+    }
 
     for (uint32_t dy = 0; dy < fitH; ++dy) {
         const uint32_t syFp = static_cast<uint32_t>((static_cast<uint64_t>(dy) * (src.height - 1u) << 8) /
@@ -668,7 +670,8 @@ bool FrameConverter::RenderStandby(
     FillRectBgra(buf, w, h, barX, barY, barTrackW, 8, 60, 48, 36);
     FillRectBgra(buf, w, h, barX + pos, barY, knobW, 8, accentB, accentG, accentR);
 
-    const int textScale = std::max(2, static_cast<int>(w / 320u));
+    const int textScale = (w >= 540u) ? std::max(2, static_cast<int>(w / 320u)) : 1;
+    const int subScale = (w >= 540u) ? std::max(2, textScale - 1) : 1;
     DrawTextCenteredBgra(buf, w, h, "WIN10 PHONELINK VIRTUAL CAM", cardY + cardH / 4, textScale, 250, 245, 240);
     DrawTextCenteredBgra(
         buf,
@@ -686,7 +689,7 @@ bool FrameConverter::RenderStandby(
         h,
         isPaused ? "RESUME IN PHONECAMRECEIVER" : "START PHONECAMRECEIVER & SCAN QR",
         cardY + (cardH * 3) / 4 - 16,
-        std::max(2, textScale - 1),
+        subScale,
         200,
         190,
         180);

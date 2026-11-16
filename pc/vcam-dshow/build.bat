@@ -24,7 +24,7 @@ popd
 exit /b 0
 
 :build_arch
-setlocal
+setlocal EnableDelayedExpansion
 set "ARCH=%~1"
 set "BUILD_DIR=%~2"
 set "VCVARS=%~3"
@@ -51,10 +51,12 @@ if errorlevel 1 (
     endlocal
     exit /b 1
 )
-del /F /Q "%BUILD_DIR%\%OUT_NAME%.old.dll" >nul 2>&1
+del /F /Q "%BUILD_DIR%\%OUT_NAME%.old*.dll" >nul 2>&1
 copy /Y "%BUILD_DIR%\%OUT_NAME%.dll" "%DIST_DIR%\%OUT_NAME%.dll" >nul 2>&1
 if errorlevel 1 (
-    move /Y "%DIST_DIR%\%OUT_NAME%.dll" "%BUILD_DIR%\%OUT_NAME%.old.dll" >nul 2>&1
+    set "STALE_DLL=%BUILD_DIR%\%OUT_NAME%.old.dll"
+    if exist "!STALE_DLL!" set "STALE_DLL=%BUILD_DIR%\%OUT_NAME%.old.!RANDOM!!RANDOM!.dll"
+    move /Y "%DIST_DIR%\%OUT_NAME%.dll" "!STALE_DLL!" >nul 2>&1
     copy /Y "%BUILD_DIR%\%OUT_NAME%.dll" "%DIST_DIR%\%OUT_NAME%.dll" >nul
     if errorlevel 1 (
         endlocal

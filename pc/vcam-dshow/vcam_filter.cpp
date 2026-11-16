@@ -5,6 +5,7 @@
 #include <cstring>
 #include <limits>
 #include <new>
+#include <utility>
 
 namespace vcam {
 
@@ -12,26 +13,25 @@ namespace {
 
 constexpr REFERENCE_TIME kDefaultFrameInterval = 166666; // 60 fps in 100ns units (10,000,000 / 166666 == 60)
 
-constexpr VideoCapEntry kSupportedCaps[] = {
-    { 1280, 720,  TargetFormat::NV12  },
-    { 1280, 720,  TargetFormat::YUY2  },
-    { 1280, 720,  TargetFormat::RGB32 },
-    { 1280, 720,  TargetFormat::RGB24 },
-    { 1920, 1080, TargetFormat::NV12  },
-    { 1920, 1080, TargetFormat::YUY2  },
-    { 1920, 1080, TargetFormat::RGB32 },
-    { 1920, 1080, TargetFormat::RGB24 },
-    { 640,  360,  TargetFormat::NV12  },
-    { 640,  360,  TargetFormat::YUY2  },
-    { 640,  360,  TargetFormat::RGB32 },
-    { 640,  360,  TargetFormat::RGB24 },
-    { 640,  480,  TargetFormat::NV12  },
-    { 640,  480,  TargetFormat::YUY2  },
-    { 640,  480,  TargetFormat::RGB32 },
-    { 640,  480,  TargetFormat::RGB24 },
+struct ResPreset {
+    uint32_t w;
+    uint32_t h;
 };
 
-constexpr int kNumSupportedCaps = static_cast<int>(sizeof(kSupportedCaps) / sizeof(kSupportedCaps[0]));
+constexpr ResPreset kLandscapePresets[] = {
+    { 1280, 720  },
+    { 1920, 1080 },
+    { 960,  540  },
+    { 640,  360  },
+    { 640,  480  },
+};
+
+constexpr ResPreset kPortraitPresets[] = {
+    { 720,  1280 },
+    { 1080, 1920 },
+    { 540,  960  },
+    { 360,  640  },
+};
 
 void FreeMediaTypeFields(AM_MEDIA_TYPE& mt) noexcept {
     if (mt.cbFormat != 0 && mt.pbFormat != nullptr) {
@@ -377,7 +377,12 @@ ULONG STDMETHODCALLTYPE CVcamOutputPin::Release() {
     return m_filter->Release();
 }
 
-AM_MEDIA_TYPE* CVcamOutputPin::CreateMediaTypeFromCap(const VideoCapEntry& cap) {
+AM_MEDIA_TYPE* CVcamOutputPin::CreateMediaTypeFromParams(
+    TargetFormat fmt,
+    uint32_t width,
+    uint32_t height,
+    bool bottomUp,
+    REFERENCE_TIME interval) {
     auto* pmt = static_cast<AM_MEDIA_TYPE*>(CoTaskMemAlloc(sizeof(AM_MEDIA_TYPE)));
     if (pmt == nullptr) return nullptr;
     auto* vih = static_cast<VIDEOINFOHEADER*>(CoTaskMemAlloc(sizeof(VIDEOINFOHEADER)));
@@ -389,19 +394,22 @@ AM_MEDIA_TYPE* CVcamOutputPin::CreateMediaTypeFromCap(const VideoCapEntry& cap) 
     std::memset(pmt, 0, sizeof(AM_MEDIA_TYPE));
     std::memset(vih, 0, sizeof(VIDEOINFOHEADER));
 
-    const uint32_t imgSize = ImageSizeForFormat(cap.format, cap.width, cap.height);
-    vih->AvgTimePerFrame = kDefaultFrameInterval;
+    const uint32_t imgSize = ImageSizeForFormat(fmt, width, height);
+    const bool isRgb = (fmt == TargetFormat::RGB32 || fmt == TargetFormat::RGB24);
+    const LONG signedHeight = (isRgb && !bottomUp) ? -static_cast<LONG>(height) : static_cast<LONG>(height);
+
+    vih->AvgTimePerFrame = interval > 0 ? interval : kDefaultFrameInterval;
     vih->dwBitRate = static_cast<DWORD>(static_cast<uint64_t>(imgSize) * 8u * 60u);
     vih->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    vih->bmiHeader.biWidth = static_cast<LONG>(cap.width);
-    vih->bmiHeader.biHeight = static_cast<LONG>(cap.height); // positive height: bottom-up for BI_RGB, top-down for YUV
+    vih->bmiHeader.biWidth = static_cast<LONG>(width);
+    vih->bmiHeader.biHeight = signedHeight;
     vih->bmiHeader.biPlanes = 1;
-    vih->bmiHeader.biBitCount = BitCountForFormat(cap.format);
-    vih->bmiHeader.biCompression = CompressionForFormat(cap.format);
+    vih->bmiHeader.biBitCount = BitCountForFormat(fmt);
+    vih->bmiHeader.biCompression = CompressionForFormat(fmt);
     vih->bmiHeader.biSizeImage = imgSize;
 
     pmt->majortype = MEDIATYPE_Video;
-    pmt->subtype = SubtypeForTarget(cap.format);
+    pmt->subtype = SubtypeForTarget(fmt);
     pmt->bFixedSizeSamples = TRUE;
     pmt->bTemporalCompression = FALSE;
     pmt->lSampleSize = static_cast<ULONG>(imgSize);
@@ -411,17 +419,136 @@ AM_MEDIA_TYPE* CVcamOutputPin::CreateMediaTypeFromCap(const VideoCapEntry& cap) 
     return pmt;
 }
 
+AM_MEDIA_TYPE* CVcamOutputPin::CreateMediaTypeFromCap(const VideoCapEntry& cap) {
+    const bool bottomUp = (cap.format == TargetFormat::RGB32 || cap.format == TargetFormat::RGB24);
+    return CreateMediaTypeFromParams(cap.format, cap.width, cap.height, bottomUp, kDefaultFrameInterval);
+}
+
+std::vector<VideoCapEntry> CVcamOutputPin::BuildCapList() const {
+    const ShmStreamHint hint = ShmReader::ProbeStreamHint();
+
+    std::vector<VideoCapEntry> caps;
+    std::vector<std::pair<uint32_t, uint32_t>> addedResolutions;
+
+    auto addRes = [&](uint32_t w, uint32_t h) {
+        if (w < 2u || h < 2u || (w & 1u) != 0 || (h & 1u) != 0) {
+            return;
+        }
+        if (w > phonelink_cam::kMaxFrameDimension || h > phonelink_cam::kMaxFrameDimension) {
+            return;
+        }
+        if (static_cast<uint64_t>(w) * static_cast<uint64_t>(h) * 4u > phonelink_cam::kShmSlotSize) {
+            return;
+        }
+        for (const auto& existing : addedResolutions) {
+            if (existing.first == w && existing.second == h) {
+                return;
+            }
+        }
+        addedResolutions.emplace_back(w, h);
+        caps.push_back({ w, h, TargetFormat::NV12 });
+        caps.push_back({ w, h, TargetFormat::YUY2 });
+        caps.push_back({ w, h, TargetFormat::RGB32 });
+        caps.push_back({ w, h, TargetFormat::RGB24 });
+    };
+
+    auto addPortraitSet = [&](uint32_t refW, uint32_t refH) {
+        const double ratio = (refH > 0) ? static_cast<double>(refW) / static_cast<double>(refH) : (9.0 / 16.0);
+        if (std::abs(ratio - (3.0 / 4.0)) < 0.03) {
+            addRes(480, 640);
+            addRes(720, 960);
+            addRes(360, 480);
+        } else if (std::abs(ratio - (9.0 / 16.0)) < 0.03) {
+            for (const auto& p : kPortraitPresets) {
+                addRes(p.w, p.h);
+            }
+        } else if (refW >= 720u && refH >= 1000u) {
+            addRes((refW / 2u) & ~1u, (refH / 2u) & ~1u);
+        }
+    };
+
+    auto addLandscapeSet = [&](uint32_t refW, uint32_t refH) {
+        const double ratio = (refH > 0) ? static_cast<double>(refW) / static_cast<double>(refH) : (16.0 / 9.0);
+        if (std::abs(ratio - (4.0 / 3.0)) < 0.03) {
+            addRes(640, 480);
+            addRes(960, 720);
+            addRes(1440, 1080);
+        } else {
+            for (const auto& p : kLandscapePresets) {
+                addRes(p.w, p.h);
+            }
+        }
+    };
+
+    if (hint.status == ShmReadStatus::Live && hint.width > 0 && hint.height > 0) {
+        addRes(hint.width, hint.height);
+        if (hint.height > hint.width) {
+            addPortraitSet(hint.width, hint.height);
+        } else {
+            addLandscapeSet(hint.width, hint.height);
+        }
+    } else if (hint.orientationHint == phonelink_cam::OrientationHint::kLandscape) {
+        if (hint.producerAlive && hint.prefWidth >= hint.prefHeight && hint.prefWidth > 0) {
+            addRes(hint.prefWidth, hint.prefHeight);
+            addLandscapeSet(hint.prefWidth, hint.prefHeight);
+        } else {
+            for (const auto& p : kLandscapePresets) {
+                addRes(p.w, p.h);
+            }
+        }
+    } else {
+        // Portrait or unspecified (default phone camera orientation is portrait):
+        // strictly advertise portrait-only caps so WebRTC/Discord and OBS never pick 1280x720 / 640x480.
+        if (hint.producerAlive && hint.prefWidth > 0 && hint.prefHeight > hint.prefWidth) {
+            addRes(hint.prefWidth, hint.prefHeight);
+            addPortraitSet(hint.prefWidth, hint.prefHeight);
+        } else {
+            for (const auto& p : kPortraitPresets) {
+                addRes(p.w, p.h);
+            }
+        }
+    }
+
+    if (caps.empty()) {
+        addRes(720, 1280);
+    }
+    return caps;
+}
+
+bool CVcamOutputPin::PreferredMtMatchesCaps(const AM_MEDIA_TYPE& mt, const std::vector<VideoCapEntry>& caps) {
+    if (caps.empty()) {
+        return true;
+    }
+    TargetFormatDesc prefDesc{};
+    REFERENCE_TIME dummy = 0;
+    if (!ExtractTargetFormatDesc(&mt, prefDesc, dummy)) {
+        return false;
+    }
+    const bool capPortrait = caps[0].height > caps[0].width;
+    const bool capLandscape = caps[0].width > caps[0].height;
+    if (capPortrait && prefDesc.width > prefDesc.height) {
+        return false;
+    }
+    if (capLandscape && prefDesc.height > prefDesc.width) {
+        return false;
+    }
+    const double capAspect = static_cast<double>(caps[0].width) / static_cast<double>(std::max(1u, caps[0].height));
+    const double prefAspect = static_cast<double>(prefDesc.width) / static_cast<double>(std::max(1u, prefDesc.height));
+    return std::abs(capAspect - prefAspect) < 0.06;
+}
+
 std::vector<AM_MEDIA_TYPE*> CVcamOutputPin::BuildMediaTypeList() const {
     std::lock_guard<std::recursive_mutex> lock(m_pinLock);
+    const std::vector<VideoCapEntry> caps = BuildCapList();
     std::vector<AM_MEDIA_TYPE*> list;
-    list.reserve(kNumSupportedCaps + 1);
+    list.reserve(caps.size() + 1);
 
-    if (m_hasPreferredMt) {
+    if (m_hasPreferredMt && PreferredMtMatchesCaps(m_preferredMt, caps)) {
         if (AM_MEDIA_TYPE* pref = CloneMediaTypeAlloc(&m_preferredMt)) {
             list.push_back(pref);
         }
     }
-    for (const auto& cap : kSupportedCaps) {
+    for (const auto& cap : caps) {
         if (AM_MEDIA_TYPE* pmt = CreateMediaTypeFromCap(cap)) {
             list.push_back(pmt);
         }
@@ -471,7 +598,9 @@ bool CVcamOutputPin::ExtractTargetFormatDesc(
 
     const uint32_t w = static_cast<uint32_t>(bmi->biWidth);
     const uint32_t h = static_cast<uint32_t>(std::abs(bmi->biHeight));
-    if (w > phonelink_cam::kMaxFrameWidth || h > phonelink_cam::kMaxFrameHeight) {
+    if (w < 2u || h < 2u ||
+        w > phonelink_cam::kMaxFrameDimension || h > phonelink_cam::kMaxFrameDimension ||
+        static_cast<uint64_t>(w) * static_cast<uint64_t>(h) * 4u > phonelink_cam::kShmSlotSize) {
         return false;
     }
     if ((fmt == TargetFormat::NV12 || fmt == TargetFormat::YUY2) && ((w & 1u) != 0 || (h & 1u) != 0)) {
@@ -635,6 +764,8 @@ HRESULT STDMETHODCALLTYPE CVcamOutputPin::Disconnect() {
     m_connectedPin.Reset();
     FreeMediaTypeFields(m_connectedMt);
     m_hasConnectedMt = false;
+    FreeMediaTypeFields(m_preferredMt);
+    m_hasPreferredMt = false;
     return S_OK;
 }
 
@@ -767,17 +898,23 @@ HRESULT STDMETHODCALLTYPE CVcamOutputPin::GetFormat(AM_MEDIA_TYPE** ppmt) {
     std::lock_guard<std::recursive_mutex> lock(m_pinLock);
     if (m_hasConnectedMt) {
         *ppmt = CloneMediaTypeAlloc(&m_connectedMt);
-    } else if (m_hasPreferredMt) {
-        *ppmt = CloneMediaTypeAlloc(&m_preferredMt);
     } else {
-        *ppmt = CreateMediaTypeFromCap(kSupportedCaps[0]);
+        const std::vector<VideoCapEntry> caps = BuildCapList();
+        if (m_hasPreferredMt && PreferredMtMatchesCaps(m_preferredMt, caps)) {
+            *ppmt = CloneMediaTypeAlloc(&m_preferredMt);
+        } else {
+            const VideoCapEntry fallback{ 720, 1280, TargetFormat::NV12 };
+            *ppmt = CreateMediaTypeFromCap(caps.empty() ? fallback : caps[0]);
+        }
     }
     return (*ppmt != nullptr) ? S_OK : E_OUTOFMEMORY;
 }
 
 HRESULT STDMETHODCALLTYPE CVcamOutputPin::GetNumberOfCapabilities(int* piCount, int* piSize) {
     if (piCount == nullptr || piSize == nullptr) return E_POINTER;
-    *piCount = kNumSupportedCaps;
+    std::lock_guard<std::recursive_mutex> lock(m_pinLock);
+    m_cachedCaps = BuildCapList();
+    *piCount = static_cast<int>(m_cachedCaps.size());
     *piSize = sizeof(VIDEO_STREAM_CONFIG_CAPS);
     return S_OK;
 }
@@ -785,9 +922,17 @@ HRESULT STDMETHODCALLTYPE CVcamOutputPin::GetNumberOfCapabilities(int* piCount, 
 HRESULT STDMETHODCALLTYPE CVcamOutputPin::GetStreamCaps(int iIndex, AM_MEDIA_TYPE** ppmt, BYTE* pSCC) {
     if (ppmt == nullptr || pSCC == nullptr) return E_POINTER;
     if (iIndex < 0) return E_INVALIDARG;
-    if (iIndex >= kNumSupportedCaps) return S_FALSE;
 
-    const VideoCapEntry& cap = kSupportedCaps[iIndex];
+    VideoCapEntry cap{};
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_pinLock);
+        if (m_cachedCaps.empty()) {
+            m_cachedCaps = BuildCapList();
+        }
+        if (iIndex >= static_cast<int>(m_cachedCaps.size())) return S_FALSE;
+        cap = m_cachedCaps[static_cast<size_t>(iIndex)];
+    }
+
     AM_MEDIA_TYPE* pmt = CreateMediaTypeFromCap(cap);
     if (pmt == nullptr) return E_OUTOFMEMORY;
 
@@ -986,6 +1131,7 @@ void CVcamOutputPin::StreamThreadProc() {
     REFERENCE_TIME frameInterval = kDefaultFrameInterval;
     ComPtr<IMemAllocator> alloc;
     ComPtr<IMemInputPin> inputPin;
+    ComPtr<IPin> connectedPin;
 
     {
         std::lock_guard<std::recursive_mutex> lock(m_pinLock);
@@ -996,11 +1142,14 @@ void CVcamOutputPin::StreamThreadProc() {
         }
         alloc = m_allocator;
         inputPin = m_inputPin;
+        connectedPin = m_connectedPin;
     }
 
     uint64_t frameIndex = 0;
     REFERENCE_TIME lastSampleEnd = 0;
     REFERENCE_TIME nextStreamTarget = 0;
+    uint32_t lastDynProbeW = desc.width;
+    uint32_t lastDynProbeH = desc.height;
 
     for (;;) {
         HANDLE startHandles[2] = { m_stopEvent, m_runEvent };
@@ -1041,11 +1190,47 @@ void CVcamOutputPin::StreamThreadProc() {
         BYTE* pBuf = nullptr;
         hr = sample->GetPointer(&pBuf);
         const long bufSize = sample->GetSize();
-        const size_t requiredBytes = FrameConverter::RequiredBufferSize(desc);
+        size_t requiredBytes = FrameConverter::RequiredBufferSize(desc);
 
         if (SUCCEEDED(hr) && pBuf != nullptr && bufSize >= static_cast<long>(requiredBytes)) {
             ShmFrameSnapshot snap{};
             const ShmReadStatus shmStatus = m_shmReader.ReadLatest(snap);
+
+            if (shmStatus == ShmReadStatus::Live &&
+                snap.width >= 2u && snap.height >= 2u &&
+                (snap.width != desc.width || snap.height != desc.height) &&
+                (snap.width != lastDynProbeW || snap.height != lastDynProbeH)) {
+                lastDynProbeW = snap.width;
+                lastDynProbeH = snap.height;
+
+                const bool orientDiff = (snap.height > snap.width) != (desc.height > desc.width);
+                const double snapAspect = static_cast<double>(snap.width) / static_cast<double>(snap.height);
+                const double descAspect = static_cast<double>(desc.width) / static_cast<double>(std::max(1u, desc.height));
+                const bool aspectDiff = std::abs(snapAspect - descAspect) > 0.06;
+                const bool evenOk = ((desc.format != TargetFormat::NV12 && desc.format != TargetFormat::YUY2) ||
+                                     (((snap.width & 1u) == 0) && ((snap.height & 1u) == 0)));
+
+                if ((orientDiff || aspectDiff) && evenOk && connectedPin) {
+                    TargetFormatDesc newDesc = desc;
+                    newDesc.width = snap.width;
+                    newDesc.height = snap.height;
+                    newDesc.stride = StrideForFormat(desc.format, snap.width);
+                    const size_t newReqBytes = FrameConverter::RequiredBufferSize(newDesc);
+                    if (newReqBytes > 0 && newReqBytes <= static_cast<size_t>(bufSize)) {
+                        if (AM_MEDIA_TYPE* newMt = CreateMediaTypeFromParams(
+                                desc.format, snap.width, snap.height, desc.bottomUp, frameInterval)) {
+                            if (connectedPin->QueryAccept(newMt) == S_OK &&
+                                SUCCEEDED(sample->SetMediaType(newMt))) {
+                                desc = newDesc;
+                                requiredBytes = newReqBytes;
+                                std::lock_guard<std::recursive_mutex> lock(m_pinLock);
+                                CopyMediaTypeFields(m_connectedMt, *newMt);
+                            }
+                            DeleteCoTaskMediaType(newMt);
+                        }
+                    }
+                }
+            }
 
             bool ok = false;
             if (shmStatus == ShmReadStatus::Live) {

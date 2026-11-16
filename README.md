@@ -15,6 +15,7 @@ Scan a QR code from the portable Windows receiver with your Android phone to str
   - **Windows PC**: Hardware decoding via **NVIDIA NVDEC** (`h264_cuvid` / `hevc_cuvid`), **Direct3D 11 (`d3d11va`)**, or **CPU** fallback, with selectable GPU index.
 - **Native DirectShow Virtual Camera (`x64` & `x86`)**:
   - Registers both 64-bit (`vcam-dshow.dll`) and 32-bit (`vcam-dshow32.dll`) filters into `HKLM` so desktop apps including **Discord** recognize `Win10 PhoneLink Virtual Camera`.
+  - Automatically matches native **Portrait** (`720x1280` / `1080x1920`) and **Landscape** (`1280x720` / `1920x1080`) orientations without black letterbox or pillarbox bars in **Discord**, **OBS**, and browsers.
   - Outputs an **unflipped RAW standby image by default**, with instant **Horizontal Flip** and **Vertical Flip** toggles in Settings, the quick bar, and the right-click context menu.
 - **Resource-Saver Preview Toggle**:
   - Right-click the PC preview pane to turn Live Preview **ON / OFF** at any time while keeping virtual camera output running.

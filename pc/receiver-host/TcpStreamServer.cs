@@ -46,6 +46,9 @@ public sealed class TcpStreamServer : IDisposable
     private string _currentCodec = "h264";
     private int _currentWidth = 1280;
     private int _currentHeight = 720;
+    private int _outputWidth = 1280;
+    private int _outputHeight = 720;
+    private int _lastObservedPortraitState = -1;
     private int _currentFps = 60;
     private int _rotationQuarterTurns;
     private int _lastPacketFlagsRotation = -1;
@@ -74,6 +77,7 @@ public sealed class TcpStreamServer : IDisposable
     private bool _disposed;
 
     public event FramePreviewHandler? FrameAvailable;
+    public event Action<bool>? OrientationChanged;
 
     public TcpStreamServer(
         ShmWriter shm,
@@ -222,14 +226,20 @@ public sealed class TcpStreamServer : IDisposable
 
         lock (_sessionLock)
         {
+            int dispW = _connected
+                ? Volatile.Read(ref _outputWidth)
+                : (_targetWidth > 0 ? _targetWidth : _currentWidth);
+            int dispH = _connected
+                ? Volatile.Read(ref _outputHeight)
+                : (_targetHeight > 0 ? _targetHeight : _currentHeight);
             return new StreamTelemetry(
                 Connected: _connected,
                 DeviceName: _connected ? _deviceName : "Waiting for connection...",
                 Codec: _connected ? _currentCodec.ToUpperInvariant() : "-",
                 EncoderName: _connected ? _encoderName : "-",
                 ActiveDecoder: Protocol.FormatDecoderDisplayName(_decoderMode, _currentCodec, _gpuDeviceIndex, _gpuDeviceName),
-                Width: _targetWidth > 0 ? _targetWidth : _currentWidth,
-                Height: _targetHeight > 0 ? _targetHeight : _currentHeight,
+                Width: dispW,
+                Height: dispH,
                 Fps: _connected ? _measuredFps : 0.0,
                 TotalFrames: Interlocked.Read(ref _totalFrames),
                 Paused: _manualPaused || _remotePaused,
@@ -378,6 +388,9 @@ public sealed class TcpStreamServer : IDisposable
                     _currentCodec = codec;
                     _currentWidth = width;
                     _currentHeight = height;
+                    Volatile.Write(ref _outputWidth, width);
+                    Volatile.Write(ref _outputHeight, height);
+                    Volatile.Write(ref _lastObservedPortraitState, -1);
                     _currentFps = fps;
                     _cachedCodecConfig = null;
                     _rotationQuarterTurns = 0;
@@ -580,6 +593,19 @@ public sealed class TcpStreamServer : IDisposable
             _flipVertical);
 
         _shm.WriteBgra32Frame(normalized, outW, outH, FrameState.Live);
+        Volatile.Write(ref _outputWidth, outW);
+        Volatile.Write(ref _outputHeight, outH);
+
+        int nextOrient = outH > outW ? 1 : 0;
+        if (Volatile.Read(ref _lastObservedPortraitState) != nextOrient)
+        {
+            int prev = Interlocked.Exchange(ref _lastObservedPortraitState, nextOrient);
+            if (prev != nextOrient)
+            {
+                OrientationChanged?.Invoke(nextOrient == 1);
+            }
+        }
+
         FrameAvailable?.Invoke(normalized, outW, outH);
     }
 

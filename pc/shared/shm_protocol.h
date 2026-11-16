@@ -42,6 +42,15 @@ inline constexpr uint8_t kVertical = 0x02u;   // Flip top/bottom
 inline constexpr uint8_t kPreApplied = 0x80u; // Producer already flipped live frame pixels in SHM
 } // namespace FlipFlags
 
+namespace OrientationHint {
+inline constexpr uint8_t kUnspecified = 0x00u;
+inline constexpr uint8_t kLandscape = 0x01u;
+inline constexpr uint8_t kPortrait = 0x02u;
+} // namespace OrientationHint
+
+inline constexpr uint32_t kMaxFrameDimension =
+    (kMaxFrameWidth > kMaxFrameHeight) ? kMaxFrameWidth : kMaxFrameHeight;
+
 #pragma pack(push, 1)
 struct ShmHeader {
     uint32_t magic;          // Offset 0: 0x504C434D ('PLCM')
